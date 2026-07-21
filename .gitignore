@@ -1,0 +1,31 @@
+# --- Secrets: never commit ------------------------------------------------
+*.secure.yaml
+!*.secure.yaml.example
+src/main/resources/keystores/
+src/main/resources/truststores/
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+.env
+.env.*
+
+# --- Build output ---------------------------------------------------------
+target/
+*.jar
+*.zip
+
+# --- Anypoint Studio / Eclipse -------------------------------------------
+.mule/
+.studio/
+.project
+.classpath
+.settings/
+
+# --- IntelliJ -------------------------------------------------------------
+.idea/
+*.iml
+
+# --- OS -------------------------------------------------------------------
+.DS_Store

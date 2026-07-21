@@ -1,0 +1,73 @@
+# =====================================================================
+# LOCAL ENVIRONMENT — non-sensitive values only
+# =====================================================================
+# Secrets belong in local.secure.yaml (gitignored).
+# See local.secure.yaml.example for the expected key set.
+#
+# All endpoints below are placeholders. SII access requires accreditation
+# with Acquirente Unico and issued client certificates; there is no public
+# sandbox, so local runs are expected to target mocks (APIKit console or
+# an Anypoint MQ-backed stub).
+# =====================================================================
+
+http:
+  host: "0.0.0.0"
+  port: "8082"
+
+sii:
+  host: "sii-mock.localhost"
+  port: "8443"
+  timeout:
+    ms: "120000"
+  seller:
+    code: "REPLACE_WITH_SII_OPERATOR_CODE"
+  tracciato:
+    version: "1.0"
+  client:
+    cert:
+      alias: "seller-client-cert"
+  path:
+    switching_submit: "/switching/v1/richieste"
+    switching_status: "/switching/v1/richieste/stato"
+  soapaction:
+    switching_submit: "urn:sii:switching:submit"
+
+salesforce:
+  host: "salesforce-mock.localhost"
+  timeout:
+    ms: "30000"
+  scope: "api refresh_token"
+  path:
+    contract_by_pdr: "/services/apexrest/contracts"
+    switching_record: "/services/apexrest/switching"
+
+billing:
+  host: "billing-mock.localhost"
+  port: "8443"
+  timeout:
+    ms: "60000"
+  scope: "billing.write"
+  path:
+    activate_supply: "/billing/v1/supply-points/activate"
+
+oauth:
+  host: "identity-mock.localhost"
+  default_scope: "api"
+  client_id: "REPLACE_WITH_CLIENT_ID"
+  path:
+    token: "/oauth2/token"
+
+mq:
+  url: "https://mq-eu-central-1.anypoint.mulesoft.com/api/v1"
+  client_id: "REPLACE_WITH_MQ_CLIENT_ID"
+  queue:
+    switching_outcome: "switching-outcome"
+    customer_notification: "customer-notification"
+    manual_review: "switching-manual-review"
+
+tls:
+  keystore:
+    path: "keystores/local-keystore.jks"
+    alias: "local"
+  truststore:
+    path: "truststores/local-truststore.jks"

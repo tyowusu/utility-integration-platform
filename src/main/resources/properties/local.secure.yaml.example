@@ -1,0 +1,48 @@
+# =====================================================================
+# TEMPLATE — copy to local.secure.yaml and populate.
+# =====================================================================
+# local.secure.yaml is gitignored and MUST NOT be committed.
+#
+# Values are stored ENCRYPTED, produced with the Mule Secure Properties
+# Tool:
+#
+#   java -cp secure-properties-tool.jar \
+#     com.mulesoft.tools.SecurePropertiesTool \
+#     string encrypt AES CBC "<key>" "<plaintext>"
+#
+# Ciphertext is wrapped in ![...] as shown below.
+#
+# ---------------------------------------------------------------------
+# The decryption key is NEVER stored in this repository. It is supplied
+# at runtime:
+#
+#   mvn clean package -Dmule.secure.key=$MULE_SECURE_KEY
+#
+# ...with MULE_SECURE_KEY held in the CI secret store or a vault.
+#
+# Committing the key alongside the ciphertext defeats the mechanism
+# entirely — anyone with repository read access would hold both halves.
+# See docs/security/data-exchange-security.md.
+# =====================================================================
+
+sii:
+  client_secret: "![REPLACE_WITH_ENCRYPTED_VALUE]"
+
+salesforce:
+  client_secret: "![REPLACE_WITH_ENCRYPTED_VALUE]"
+
+billing:
+  client_secret: "![REPLACE_WITH_ENCRYPTED_VALUE]"
+
+oauth:
+  client_secret: "![REPLACE_WITH_ENCRYPTED_VALUE]"
+
+mq:
+  client_secret: "![REPLACE_WITH_ENCRYPTED_VALUE]"
+
+tls:
+  keystore:
+    password: "![REPLACE_WITH_ENCRYPTED_VALUE]"
+    keyPassword: "![REPLACE_WITH_ENCRYPTED_VALUE]"
+  truststore:
+    password: "![REPLACE_WITH_ENCRYPTED_VALUE]"

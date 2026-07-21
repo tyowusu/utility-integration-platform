@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:anypoint-mq="http://www.mulesoft.org/schema/mule/anypoint-mq"
+      xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties"
+      xmlns:tls="http://www.mulesoft.org/schema/mule/tls"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
+        http://www.mulesoft.org/schema/mule/anypoint-mq http://www.mulesoft.org/schema/mule/anypoint-mq/current/mule-anypoint-mq.xsd
+        http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+        http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd
+        http://www.mulesoft.org/schema/mule/tls http://www.mulesoft.org/schema/mule/tls/current/mule-tls.xsd">
+
+    <!--
+      ====================================================================
+      GLOBAL CONFIGURATION
+      ====================================================================
+      Security posture per channel, and the reasoning behind each choice:
+
+        SII (Acquirente Unico)  → mTLS + signed XML
+              A regulated interface. The counterparty must be able to prove
+              which Seller submitted a given request, so client-certificate
+              authentication is mandatory rather than bearer tokens.
+
+        Salesforce / Billing    → OAuth2 client credentials
+              Internal machine-to-machine. Short-lived tokens, rotated
+              centrally, no long-lived shared secrets in the runtime.
+
+        Portals (B2B/B2C)       → OAuth2 + API Manager policies
+              Rate limiting, spike control and client-id enforcement are
+              applied at the gateway rather than in flow logic, so the
+              policy set is auditable independently of a deployment.
+
+      The secure-properties decryption key resolves from ${mule.secure.key},
+      supplied at deploy time. It is never committed.
+      ====================================================================
+    -->
+
+    <configuration doc:name="Configuration"
+                   defaultErrorHandler-ref="global-error-handler" />
+
+    <global-property name="mule.env" value="local" />
+
+    <configuration-properties doc:name="Environment properties"
+                              file="properties/${mule.env}.yaml" />
+
+    <secure-properties:config name="Secure_Properties_Config"
+                              doc:name="Secure properties"
+                              file="properties/${mule.env}.secure.yaml"
+                              key="${mule.secure.key}">
+        <secure-properties:encrypt algorithm="AES" mode="CBC" />
+    </secure-properties:config>
+
+    <!-- ==================== Inbound: experience APIs ==================== -->
+    <http:listener-config name="switching-eapi-listener-config"
+                          doc:name="Switching Experience API listener">
+        <http:listener-connection host="${http.host}"
+                                  port="${http.port}"
+                                  protocol="HTTPS">
+            <tls:context>
+                <tls:key-store type="jks"
+                               path="${tls.keystore.path}"
+                               alias="${tls.keystore.alias}"
+                               keyPassword="${secure::tls.keystore.keyPassword}"
+                               password="${secure::tls.keystore.password}" />
+            </tls:context>
+        </http:listener-connection>
+    </http:listener-config>
+
+    <apikit:config name="switching-eapi-config"
+                   api="api/switching-eapi.raml"
+                   outboundHeadersMapName="outboundHeaders"
+                   httpStatusVarName="httpStatus" />
+
+    <!--
+      ==================== Outbound: SII gateway ====================
+      Mutual TLS. The truststore holds Acquirente Unico's CA chain; the
+      keystore holds the Seller's client certificate.
+
+      Timeout is generous (120s) because SII synchronous acknowledgements
+      degrade under load around regulatory deadlines — notably the 10th of
+      the month, when switching requests for the following month cluster.
+    -->
+    <http:request-config name="sii-request-config" doc:name="SII gateway"
+                         responseTimeout="${sii.timeout.ms}">
+        <http:request-connection protocol="HTTPS"
+                                 host="${sii.host}"
+                                 port="${sii.port}">
+            <tls:context>
+                <tls:key-store type="jks"
+                               path="${tls.keystore.path}"
+                               alias="${sii.client.cert.alias}"
+                               keyPassword="${secure::tls.keystore.keyPassword}"
+                               password="${secure::tls.keystore.password}" />
+                <tls:trust-store path="${tls.truststore.path}"
+                                 password="${secure::tls.truststore.password}"
+                                 type="jks" />
+            </tls:context>
+            <reconnection failsDeployment="false">
+                <reconnect frequency="10000" count="3" />
+            </reconnection>
+        </http:request-connection>
+    </http:request-config>
+
+    <!-- ==================== Outbound: Salesforce CRM ==================== -->
+    <http:request-config name="salesforce-request-config" doc:name="Salesforce CRM"
+                         responseTimeout="${salesforce.timeout.ms}">
+        <http:request-connection protocol="HTTPS"
+                                 host="${salesforce.host}"
+                                 port="443">
+            <tls:context>
+                <tls:trust-store path="${tls.truststore.path}"
+                                 password="${secure::tls.truststore.password}"
+                                 type="jks" />
+            </tls:context>
+        </http:request-connection>
+    </http:request-config>
+
+    <!-- ==================== Outbound: Billing / MDM ==================== -->
+    <http:request-config name="billing-request-config" doc:name="Billing / MDM"
+                         responseTimeout="${billing.timeout.ms}">
+        <http:request-connection protocol="HTTPS"
+                                 host="${billing.host}"
+                                 port="${billing.port}">
+            <tls:context>
+                <tls:trust-store path="${tls.truststore.path}"
+                                 password="${secure::tls.truststore.password}"
+                                 type="jks" />
+            </tls:context>
+            <reconnection failsDeployment="false">
+                <reconnect frequency="5000" count="3" />
+            </reconnection>
+        </http:request-connection>
+    </http:request-config>
+
+    <!-- ==================== OAuth2 token endpoint ==================== -->
+    <http:request-config name="oauth-request-config" doc:name="OAuth2 token endpoint"
+                         responseTimeout="15000">
+        <http:request-connection protocol="HTTPS" host="${oauth.host}" port="443" />
+    </http:request-config>
+
+    <!--
+      ==================== Asynchronous messaging ====================
+      SII responses are not synchronous. The distributor has 1 working day to
+      return an admissibility outcome (2 for inadmissibility) per Delibera
+      77/2018/R/com, so the request and its outcome are separate transactions
+      correlated by request id. See ADR-0004.
+    -->
+    <anypoint-mq:config name="Anypoint_MQ_Config" doc:name="Anypoint MQ">
+        <anypoint-mq:connection url="${mq.url}"
+                                clientId="${mq.client_id}"
+                                clientSecret="${secure::mq.client_secret}">
+            <reconnection failsDeployment="true">
+                <reconnect frequency="5000" count="5" />
+            </reconnection>
+        </anypoint-mq:connection>
+    </anypoint-mq:config>
+
+    <!--
+      Correlation store. Keys the in-flight switching request id to its
+      originating channel and customer so an asynchronous distributor
+      response can be reunited with its request. TTL exceeds the regulatory
+      response window with margin.
+    -->
+    <os:object-store name="switching-correlation-store"
+                     doc:name="Switching correlation store"
+                     persistent="true"
+                     entryTtl="30"
+                     entryTtlUnit="DAYS"
+                     maxEntries="500000"
+                     expirationInterval="1"
+                     expirationIntervalUnit="HOURS" />
+
+</mule>

@@ -1,0 +1,12 @@
+{
+  "minMuleVersion": "4.6.0",
+  "secureProperties": [
+    "sii.client_secret",
+    "salesforce.client_secret",
+    "billing.client_secret",
+    "mq.client_secret",
+    "tls.keystore.password",
+    "tls.keystore.keyPassword",
+    "tls.truststore.password"
+  ]
+}

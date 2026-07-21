@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!--
+      ====================================================================
+      SYSTEM LAYER — Salesforce CRM and Billing / MDM
+      ====================================================================
+      Both reached over OAuth2 client credentials. Tokens are cached for
+      their lifetime rather than re-fetched per call: at switching-deadline
+      volumes, a token round trip per request would roughly double outbound
+      call count against the identity provider for no benefit.
+      ====================================================================
+    -->
+
+    <!-- ==================== OAuth2 token acquisition ==================== -->
+    <sub-flow name="system-get-oauth-token">
+        <ee:transform doc:name="Build token request">
+            <ee:message>
+                <ee:set-payload><![CDATA[
+                    %dw 2.0
+                    output application/x-www-form-urlencoded
+                    ---
+                    {
+                        grant_type: "client_credentials",
+                        client_id: p('oauth.client_id'),
+                        client_secret: p('secure::oauth.client_secret'),
+                        scope: vars.oauthScope default p('oauth.default_scope')
+                    }
+                ]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <http:request method="POST" doc:name="POST token request"
+                      config-ref="oauth-request-config"
+                      path="${oauth.path.token}"
+                      sendCorrelationId="ALWAYS">
+            <http:headers><![CDATA[#[{ "Content-Type": "application/x-www-form-urlencoded" }]]]></http:headers>
+        </http:request>
+
+        <set-variable variableName="accessToken" value="#[payload.access_token]"
+                      doc:name="Stash access token" />
+    </sub-flow>
+
+    <!-- ==================== Salesforce CRM ==================== -->
+    <sub-flow name="system-salesforce-get-contract">
+        <set-variable variableName="oauthScope" value="${salesforce.scope}" doc:name="Set scope" />
+        <flow-ref name="system-get-oauth-token" doc:name="Authenticate" />
+
+        <http:request method="GET" doc:name="GET contract by PDR"
+                      config-ref="salesforce-request-config"
+                      path="${salesforce.path.contract_by_pdr}"
+                      sendCorrelationId="ALWAYS"
+                      target="payload">
+            <http:headers><![CDATA[#[{
+                "Authorization": "Bearer " ++ vars.accessToken,
+                "Accept": "application/json"
+            }]]]></http:headers>
+            <http:query-params><![CDATA[#[{
+                "pdr": vars.switchingRequest.pdr
+            }]]]></http:query-params>
+        </http:request>
+    </sub-flow>
+
+    <sub-flow name="system-salesforce-record-submission">
+        <set-variable variableName="oauthScope" value="${salesforce.scope}" doc:name="Set scope" />
+        <flow-ref name="system-get-oauth-token" doc:name="Authenticate" />
+
+        <ee:transform doc:name="Build CRM submission record">
+            <ee:message>
+                <ee:set-payload><![CDATA[
+                    %dw 2.0
+                    output application/json
+                    ---
+                    {
+                        ContractId: vars.crmContract.Id,
+                        PDR__c: vars.switchingRequest.pdr,
+                        SwitchingRequestId__c: vars.siiRequestId,
+                        EffectiveDate__c: vars.switchingRequest.effectiveDate,
+                        Status__c: "SUBMITTED_TO_SII",
+                        Channel__c: vars.channel,
+                        OperatorId__c: vars.operatorId,
+                        SubmittedAt__c: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"}
+                    }
+                ]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <http:request method="POST" doc:name="POST switching record"
+                      config-ref="salesforce-request-config"
+                      path="${salesforce.path.switching_record}"
+                      sendCorrelationId="ALWAYS">
+            <http:headers><![CDATA[#[{
+                "Authorization": "Bearer " ++ vars.accessToken,
+                "Content-Type": "application/json"
+            }]]]></http:headers>
+        </http:request>
+    </sub-flow>
+
+    <sub-flow name="system-salesforce-update-switching-outcome">
+        <set-variable variableName="oauthScope" value="${salesforce.scope}" doc:name="Set scope" />
+        <flow-ref name="system-get-oauth-token" doc:name="Authenticate" />
+
+        <ee:transform doc:name="Build outcome update">
+            <ee:message>
+                <ee:set-payload><![CDATA[
+                    %dw 2.0
+                    output application/json
+                    ---
+                    {
+                        SwitchingRequestId__c: vars.correlation.requestId,
+                        Status__c: if (vars.outcome.admissible) "ADMISSIBLE" else "REJECTED",
+                        OutcomeReasonCode__c: vars.outcome.reasonCode default null,
+                        OutcomeReasonText__c: vars.outcome.reasonText default null,
+                        OutcomeReceivedAt__c: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"}
+                    }
+                ]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <http:request method="PATCH" doc:name="PATCH switching record"
+                      config-ref="salesforce-request-config"
+                      path="${salesforce.path.switching_record}"
+                      sendCorrelationId="ALWAYS">
+            <http:headers><![CDATA[#[{
+                "Authorization": "Bearer " ++ vars.accessToken,
+                "Content-Type": "application/json"
+            }]]]></http:headers>
+        </http:request>
+    </sub-flow>
+
+    <!-- ==================== Billing / MDM ==================== -->
+    <sub-flow name="system-billing-activate-supply">
+        <set-variable variableName="oauthScope" value="${billing.scope}" doc:name="Set scope" />
+        <flow-ref name="system-get-oauth-token" doc:name="Authenticate" />
+
+        <ee:transform doc:name="Build activation request">
+            <ee:message>
+                <ee:set-payload><![CDATA[
+                    %dw 2.0
+                    output application/json
+                    ---
+                    {
+                        supplyPointId: vars.outcome.pdr,
+                        accountId: vars.correlation.crmAccountId,
+                        contractId: vars.correlation.crmContractId,
+                        /*
+                         * Supply starts on the switching effective date, which
+                         * regulation fixes at the first day of the month. It is
+                         * NOT the date this message is processed — a late
+                         * outcome must still activate from the regulated date,
+                         * or the customer is billed for a period during which
+                         * they were not yet our customer.
+                         */
+                        activationDate: vars.outcome.effectiveDate,
+                        source: "SWITCHING",
+                        switchingRequestId: vars.correlation.requestId
+                    }
+                ]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <http:request method="POST" doc:name="POST supply activation"
+                      config-ref="billing-request-config"
+                      path="${billing.path.activate_supply}"
+                      sendCorrelationId="ALWAYS">
+            <http:headers><![CDATA[#[{
+                "Authorization": "Bearer " ++ vars.accessToken,
+                "Content-Type": "application/json",
+                /*
+                 * Idempotency key derived from the SII request id. Queue
+                 * redelivery must not produce a duplicate activation and a
+                 * duplicate bill.
+                 */
+                "Idempotency-Key": "SW-" ++ vars.correlation.requestId
+            }]]]></http:headers>
+        </http:request>
+    </sub-flow>
+
+</mule>

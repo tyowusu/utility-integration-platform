@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!--
+      ====================================================================
+      PROCESS LAYER — switching orchestration
+      ====================================================================
+      Owns the regulated business rules. This is the layer an ARERA
+      resolution changes: when the Authority amends a deadline or an
+      eligibility condition, the amendment lands in the DataWeave rule
+      modules referenced here, not in the channel APIs and not in the
+      system-layer connectors.
+
+      That containment is the whole point of the layering in a regulated
+      domain — regulatory change is frequent and its blast radius must be
+      predictable and testable.
+      ====================================================================
+    -->
+
+    <!-- ================= Submit a switching request ================= -->
+    <sub-flow name="process-submit-switching-request">
+
+        <!-- 1. Structural and regulatory validation, before any I/O. -->
+        <ee:transform doc:name="Validate against ARERA rules">
+            <ee:variables>
+                <ee:set-variable variableName="validation"
+                                 resource="dwl/validate-switching-request.dwl" />
+            </ee:variables>
+        </ee:transform>
+
+        <choice doc:name="Request admissible?">
+            <when expression="#[not vars.validation.valid]">
+                <!--
+                  Rejected locally. Submitting a request the regulation will
+                  refuse wastes a SII transaction and, more importantly,
+                  pollutes the Seller's rejection statistics — which ARERA
+                  monitors under commercial-quality reporting.
+                -->
+                <raise-error type="SWITCHING:NOT_ADMISSIBLE"
+                             description="#[joinBy(vars.validation.errors, '; ')]" />
+            </when>
+            <otherwise>
+                <ee:transform doc:name="Stash normalised request">
+                    <ee:variables>
+                        <ee:set-variable variableName="switchingRequest"><![CDATA[
+                            %dw 2.0
+                            output application/java
+                            ---
+                            payload ++ {
+                                effectiveDate: vars.validation.normalisedEffectiveDate,
+                                channel: vars.channel,
+                                operatorId: vars.operatorId
+                            }
+                        ]]></ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+
+                <!-- 2. Confirm the customer and contract exist in CRM. -->
+                <flow-ref name="system-salesforce-get-contract"
+                          doc:name="Salesforce: fetch contract" />
+
+                <ee:transform doc:name="Stash CRM context">
+                    <ee:variables>
+                        <ee:set-variable variableName="crmContract"><![CDATA[
+                            %dw 2.0
+                            output application/java
+                            ---
+                            payload
+                        ]]></ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+
+                <!--
+                  3. Guard against duplicate submissions for the same PDR and
+                     effective date. A customer clicking twice, or a portal
+                     retrying on timeout, must not produce two SII requests —
+                     the second would be rejected by SII and would count
+                     against the Seller.
+                -->
+                <os:retrieve doc:name="Check for in-flight request"
+                             key="#['SW-' ++ vars.switchingRequest.pdr ++ '-' ++ vars.switchingRequest.effectiveDate]"
+                             objectStore="switching-correlation-store"
+                             target="existingRequest">
+                    <os:default-value><![CDATA[#[null]]]></os:default-value>
+                </os:retrieve>
+
+                <choice doc:name="Already in flight?">
+                    <when expression="#[vars.existingRequest != null]">
+                        <ee:transform doc:name="Return existing request">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[
+                                    %dw 2.0
+                                    output application/json
+                                    ---
+                                    {
+                                        requestId: vars.existingRequest.requestId,
+                                        status: "ALREADY_SUBMITTED",
+                                        effectiveDate: vars.switchingRequest.effectiveDate,
+                                        message: "A switching request for this supply point and effective date is already in progress."
+                                    }
+                                ]]></ee:set-payload>
+                            </ee:message>
+                            <ee:variables>
+                                <ee:set-variable variableName="httpStatus">200</ee:set-variable>
+                            </ee:variables>
+                        </ee:transform>
+                    </when>
+                    <otherwise>
+                        <!-- 4. Build and submit the SII request. -->
+                        <ee:transform doc:name="Map to SII tracciato">
+                            <ee:message>
+                                <ee:set-payload resource="dwl/canonical-to-sii-request.dwl" />
+                            </ee:message>
+                        </ee:transform>
+
+                        <flow-ref name="system-sii-submit-switching"
+                                  doc:name="SII: submit switching request" />
+
+                        <ee:transform doc:name="Extract SII acknowledgement">
+                            <ee:variables>
+                                <ee:set-variable variableName="siiRequestId"><![CDATA[
+                                    %dw 2.0
+                                    output application/java
+                                    ---
+                                    payload.esito.codiceRichiesta default null
+                                ]]></ee:set-variable>
+                            </ee:variables>
+                        </ee:transform>
+
+                        <!--
+                          5. Persist the correlation BEFORE returning to the
+                             caller. If this store failed after we had already
+                             responded 202, the asynchronous distributor
+                             outcome would arrive with nothing to attach it to
+                             and the request would be orphaned.
+                        -->
+                        <os:store doc:name="Store correlation"
+                                  key="#['SW-' ++ vars.switchingRequest.pdr ++ '-' ++ vars.switchingRequest.effectiveDate]"
+                                  objectStore="switching-correlation-store">
+                            <os:value><![CDATA[#[%dw 2.0
+                                output application/java
+                                ---
+                                {
+                                    requestId: vars.siiRequestId,
+                                    pdr: vars.switchingRequest.pdr,
+                                    effectiveDate: vars.switchingRequest.effectiveDate,
+                                    crmContractId: vars.crmContract.Id,
+                                    crmAccountId: vars.crmContract.AccountId,
+                                    channel: vars.channel,
+                                    operatorId: vars.operatorId,
+                                    clientRequestId: vars.clientRequestId,
+                                    submittedAt: now()
+                                }]]]></os:value>
+                        </os:store>
+
+                        <flow-ref name="system-salesforce-record-submission"
+                                  doc:name="Salesforce: record submission" />
+
+                        <ee:transform doc:name="Build 202 response">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[
+                                    %dw 2.0
+                                    output application/json
+                                    ---
+                                    {
+                                        requestId: vars.siiRequestId,
+                                        status: "SUBMITTED",
+                                        pdr: vars.switchingRequest.pdr,
+                                        effectiveDate: vars.switchingRequest.effectiveDate,
+                                        /*
+                                         * The caller is told explicitly that the
+                                         * outcome is asynchronous and roughly when
+                                         * to expect it. Portals surface this to the
+                                         * customer directly, which removes a large
+                                         * share of "where is my switch?" contacts.
+                                         */
+                                        outcomeExpectedBy: vars.validation.outcomeExpectedBy,
+                                        message: "Request accepted and submitted to SII. The distributor's admissibility outcome will follow asynchronously."
+                                    }
+                                ]]></ee:set-payload>
+                            </ee:message>
+                            <ee:variables>
+                                <ee:set-variable variableName="httpStatus">202</ee:set-variable>
+                            </ee:variables>
+                        </ee:transform>
+                    </otherwise>
+                </choice>
+            </otherwise>
+        </choice>
+
+        <logger level="INFO" doc:name="Audit log"
+                message='#[%dw 2.0
+                    output application/json
+                    ---
+                    {
+                        event: "SWITCHING_REQUEST_SUBMITTED",
+                        correlationId: correlationId,
+                        requestId: vars.siiRequestId default null,
+                        pdr: vars.switchingRequest.pdr default null,
+                        effectiveDate: vars.switchingRequest.effectiveDate default null,
+                        channel: vars.channel,
+                        operatorId: vars.operatorId
+                    }]' />
+    </sub-flow>
+
+    <!-- ================= Retrieve switching status ================= -->
+    <sub-flow name="process-get-switching-status">
+        <flow-ref name="system-sii-get-switching-status"
+                  doc:name="SII: query request status" />
+
+        <ee:transform doc:name="Map to canonical status">
+            <ee:message>
+                <ee:set-payload resource="dwl/sii-status-to-canonical.dwl" />
+            </ee:message>
+        </ee:transform>
+    </sub-flow>
+
+    <!-- ================= Eligibility pre-flight ================= -->
+    <sub-flow name="process-check-eligibility">
+        <ee:transform doc:name="Evaluate regulatory calendar">
+            <ee:message>
+                <ee:set-payload resource="dwl/switching-eligibility.dwl" />
+            </ee:message>
+        </ee:transform>
+    </sub-flow>
+
+</mule>

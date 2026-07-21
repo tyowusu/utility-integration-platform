@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!--
+      ====================================================================
+      EXPERIENCE LAYER — switching (cambio venditore)
+      ====================================================================
+      Serves three consumers with one contract: the B2C portal, the B2B
+      portal, and Salesforce (agent-initiated requests).
+
+      Channel is carried as a header rather than split across separate
+      endpoints. The regulated process is identical regardless of origin —
+      only the audit trail differs — so forking the API by channel would
+      duplicate the contract without duplicating any behaviour.
+      ====================================================================
+    -->
+
+    <flow name="switching-eapi-main">
+        <http:listener config-ref="switching-eapi-listener-config" path="/api/*">
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+        <apikit:router config-ref="switching-eapi-config" />
+    </flow>
+
+    <!-- ============ POST /switching-requests ============ -->
+    <flow name="post:\switching-requests:application\json:switching-eapi-config">
+        <ee:transform doc:name="Bind channel and actor context">
+            <ee:variables>
+                <!--
+                  Channel and operator are captured for the audit record.
+                  ARERA commercial-quality reporting requires the Seller to
+                  evidence the origin of each switching request, so this is
+                  a compliance field, not telemetry.
+                -->
+                <ee:set-variable variableName="channel"><![CDATA[
+                    attributes.headers.'x-channel' default "UNKNOWN"
+                ]]></ee:set-variable>
+                <ee:set-variable variableName="operatorId"><![CDATA[
+                    attributes.headers.'x-operator-id' default "SYSTEM"
+                ]]></ee:set-variable>
+                <ee:set-variable variableName="clientRequestId"><![CDATA[
+                    attributes.headers.'x-client-request-id' default correlationId
+                ]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <flow-ref name="process-submit-switching-request"
+                  doc:name="Submit switching request" />
+    </flow>
+
+    <!-- ============ GET /switching-requests/{requestId} ============ -->
+    <flow name="get:\switching-requests\(requestId):switching-eapi-config">
+        <ee:transform doc:name="Bind request id">
+            <ee:variables>
+                <ee:set-variable variableName="requestId"><![CDATA[
+                    attributes.uriParams.'requestId'
+                ]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <flow-ref name="process-get-switching-status"
+                  doc:name="Retrieve switching status" />
+    </flow>
+
+    <!-- ============ GET /supply-points/{pdr}/eligibility ============ -->
+    <flow name="get:\supply-points\(pdr)\eligibility:switching-eapi-config">
+        <ee:transform doc:name="Bind PDR">
+            <ee:variables>
+                <ee:set-variable variableName="pdr"><![CDATA[
+                    attributes.uriParams.'pdr'
+                ]]></ee:set-variable>
+                <ee:set-variable variableName="requestedEffectiveDate"><![CDATA[
+                    attributes.queryParams.'effectiveDate'
+                ]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <!--
+          Pre-flight check exposed to the portals. Lets the front end tell a
+          customer "the earliest date we can switch you is 1 September"
+          before they complete a form, rather than rejecting the submission
+          afterwards. Cheap to serve and materially reduces abandoned
+          journeys and inbound contact-centre volume.
+        -->
+        <flow-ref name="process-check-eligibility"
+                  doc:name="Check switching eligibility" />
+    </flow>
+
+</mule>

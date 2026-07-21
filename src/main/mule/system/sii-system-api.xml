@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!--
+      ====================================================================
+      SYSTEM LAYER — SII (Sistema Informativo Integrato)
+      ====================================================================
+      The regulated external interface, operated by Acquirente Unico under
+      Law 129/2010. The only component in the platform that speaks the SII
+      wire format.
+
+      Two properties distinguish this from an ordinary system API:
+
+      1. The payload is XML on a regulated tracciato. Field names, ordering
+         and cardinality are prescribed by the technical specification, not
+         chosen by us. Mapping is therefore isolated in versioned DataWeave
+         modules that can be re-pointed when Acquirente Unico publishes a
+         new specification version.
+
+      2. Every exchange is auditable. Requests and responses are logged with
+         their SII request id, retained per the Seller's retention policy,
+         and must be producible on request. Logging here is a regulatory
+         control, not diagnostics.
+      ====================================================================
+    -->
+
+    <!-- ==================== Submit switching request ==================== -->
+    <sub-flow name="system-sii-submit-switching">
+
+        <ee:transform doc:name="Set XML content type">
+            <ee:variables>
+                <ee:set-variable variableName="siiPayload"><![CDATA[
+                    %dw 2.0
+                    output application/xml
+                    ---
+                    payload
+                ]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <logger level="INFO" doc:name="Audit: SII request"
+                message='#["SII_REQUEST_OUT process=SWITCHING correlationId=" ++ correlationId ++ " pdr=" ++ (vars.switchingRequest.pdr default "")]' />
+
+        <http:request method="POST"
+                      doc:name="POST switching request to SII"
+                      config-ref="sii-request-config"
+                      path="${sii.path.switching_submit}"
+                      sendCorrelationId="ALWAYS">
+            <http:body><![CDATA[#[vars.siiPayload]]]></http:body>
+            <http:headers><![CDATA[#[{
+                "Content-Type": "application/xml",
+                "SOAPAction": "${sii.soapaction.switching_submit}"
+            }]]]></http:headers>
+        </http:request>
+
+        <ee:transform doc:name="Parse SII acknowledgement">
+            <ee:message>
+                <ee:set-payload><![CDATA[
+                    %dw 2.0
+                    output application/java
+                    ---
+                    /*
+                     * SII returns a synchronous acknowledgement carrying the
+                     * request id. This is NOT the outcome — it confirms the
+                     * request was accepted for processing. The distributor's
+                     * admissibility decision arrives asynchronously.
+                     *
+                     * Conflating the two is the single most common defect in
+                     * SII integrations: the acknowledgement is mistaken for a
+                     * confirmed switch and the customer is told the switch
+                     * succeeded before the distributor has ruled on it.
+                     */
+                    payload
+                ]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <logger level="INFO" doc:name="Audit: SII acknowledgement"
+                message='#["SII_ACK_IN process=SWITCHING correlationId=" ++ correlationId ++ " requestId=" ++ (payload.esito.codiceRichiesta default "none")]' />
+    </sub-flow>
+
+    <!-- ==================== Query request status ==================== -->
+    <sub-flow name="system-sii-get-switching-status">
+        <http:request method="GET"
+                      doc:name="GET switching status from SII"
+                      config-ref="sii-request-config"
+                      path="${sii.path.switching_status}"
+                      sendCorrelationId="ALWAYS"
+                      target="payload">
+            <http:query-params><![CDATA[#[{
+                "codiceRichiesta": vars.requestId
+            }]]]></http:query-params>
+            <http:headers><![CDATA[#[{ "Accept": "application/xml" }]]]></http:headers>
+        </http:request>
+    </sub-flow>
+
+</mule>

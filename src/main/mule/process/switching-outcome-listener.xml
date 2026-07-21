@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:anypoint-mq="http://www.mulesoft.org/schema/mule/anypoint-mq"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/anypoint-mq http://www.mulesoft.org/schema/mule/anypoint-mq/current/mule-anypoint-mq.xsd
+        http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!--
+      ====================================================================
+      EVENT-DRIVEN — asynchronous switching outcome
+      ====================================================================
+      Under Delibera 77/2018/R/com the distributor returns admissibility
+      within 1 working day of the SII notification (2 working days for an
+      inadmissibility outcome). The outcome therefore arrives as a separate
+      inbound transaction, hours or days after submission.
+
+      This listener reunites that outcome with its originating request via
+      the correlation store, then fans the result out to CRM, billing and
+      the customer's notification channel.
+
+      Why a queue rather than an inbound HTTP endpoint:
+
+        - Outcomes cluster heavily around regulatory deadlines. A queue
+          absorbs the spike; an HTTP endpoint would shed it.
+        - If Salesforce or billing is unavailable, the message stays queued
+          and is redelivered. A lost outcome is a compliance failure, not a
+          transient inconvenience.
+        - Redelivery is bounded, and exhausted messages land on a DLQ for
+          operator triage rather than disappearing.
+      ====================================================================
+    -->
+
+    <flow name="switching-outcome-listener">
+        <anypoint-mq:subscriber doc:name="Subscribe: switching outcomes"
+                                config-ref="Anypoint_MQ_Config"
+                                destination="${mq.queue.switching_outcome}"
+                                acknowledgementMode="MANUAL">
+            <anypoint-mq:subscriber-type>
+                <anypoint-mq:prefetch maxLocalMessages="10"
+                                      acknowledgementTimeout="300"
+                                      acknowledgementTimeoutUnit="SECONDS" />
+            </anypoint-mq:subscriber-type>
+        </anypoint-mq:subscriber>
+
+        <try doc:name="Process outcome">
+
+            <ee:transform doc:name="Parse SII outcome">
+                <ee:message>
+                    <ee:set-payload resource="dwl/sii-outcome-to-canonical.dwl" />
+                </ee:message>
+                <ee:variables>
+                    <ee:set-variable variableName="ackToken"><![CDATA[
+                        attributes.ackToken
+                    ]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+
+            <ee:transform doc:name="Stash outcome">
+                <ee:variables>
+                    <ee:set-variable variableName="outcome"><![CDATA[
+                        %dw 2.0
+                        output application/java
+                        ---
+                        payload
+                    ]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+
+            <!-- Reunite with the originating request. -->
+            <os:retrieve doc:name="Retrieve correlation"
+                         key="#['SW-' ++ vars.outcome.pdr ++ '-' ++ vars.outcome.effectiveDate]"
+                         objectStore="switching-correlation-store"
+                         target="correlation">
+                <os:default-value><![CDATA[#[null]]]></os:default-value>
+            </os:retrieve>
+
+            <choice doc:name="Correlation found?">
+                <when expression="#[vars.correlation == null]">
+                    <!--
+                      An outcome with no matching request. Causes seen in
+                      practice: a request submitted by a previous platform
+                      before cutover, a duplicate outcome after the TTL
+                      elapsed, or a genuine SII-side error.
+
+                      It is acknowledged rather than retried — redelivery
+                      cannot create a correlation that does not exist — but
+                      routed to a manual-review queue, because silently
+                      dropping a regulated message is not acceptable.
+                    -->
+                    <logger level="WARN" doc:name="Log orphaned outcome"
+                            message='#["Orphaned switching outcome: pdr=" ++ vars.outcome.pdr ++ " effectiveDate=" ++ vars.outcome.effectiveDate ++ " correlationId=" ++ correlationId]' />
+
+                    <anypoint-mq:publish doc:name="Publish to manual review"
+                                         config-ref="Anypoint_MQ_Config"
+                                         destination="${mq.queue.manual_review}" />
+                </when>
+                <otherwise>
+                    <!-- Update CRM first: it is the system of record for
+                         customer-visible contract state. -->
+                    <flow-ref name="system-salesforce-update-switching-outcome"
+                              doc:name="Salesforce: update outcome" />
+
+                    <choice doc:name="Admissible?">
+                        <when expression="#[vars.outcome.admissible]">
+                            <flow-ref name="system-billing-activate-supply"
+                                      doc:name="Billing: schedule supply activation" />
+
+                            <anypoint-mq:publish doc:name="Publish customer notification"
+                                                 config-ref="Anypoint_MQ_Config"
+                                                 destination="${mq.queue.customer_notification}">
+                                <anypoint-mq:body><![CDATA[#[%dw 2.0
+                                    output application/json
+                                    ---
+                                    {
+                                        type: "SWITCHING_CONFIRMED",
+                                        accountId: vars.correlation.crmAccountId,
+                                        pdr: vars.outcome.pdr,
+                                        effectiveDate: vars.outcome.effectiveDate,
+                                        channel: vars.correlation.channel
+                                    }]]]></anypoint-mq:body>
+                            </anypoint-mq:publish>
+                        </when>
+                        <otherwise>
+                            <!--
+                              Rejections are notified with the SII reason code
+                              translated into customer-comprehensible text. An
+                              untranslated code in a customer notification is a
+                              guaranteed inbound call.
+                            -->
+                            <anypoint-mq:publish doc:name="Publish rejection notification"
+                                                 config-ref="Anypoint_MQ_Config"
+                                                 destination="${mq.queue.customer_notification}">
+                                <anypoint-mq:body><![CDATA[#[%dw 2.0
+                                    output application/json
+                                    ---
+                                    {
+                                        type: "SWITCHING_REJECTED",
+                                        accountId: vars.correlation.crmAccountId,
+                                        pdr: vars.outcome.pdr,
+                                        effectiveDate: vars.outcome.effectiveDate,
+                                        reasonCode: vars.outcome.reasonCode,
+                                        reasonText: vars.outcome.reasonText,
+                                        channel: vars.correlation.channel
+                                    }]]]></anypoint-mq:body>
+                            </anypoint-mq:publish>
+                        </otherwise>
+                    </choice>
+                </otherwise>
+            </choice>
+
+            <anypoint-mq:ack doc:name="Acknowledge"
+                             config-ref="Anypoint_MQ_Config"
+                             ackToken="#[vars.ackToken]" />
+
+            <error-handler>
+                <!--
+                  NACK returns the message to the queue for redelivery. After
+                  the configured delivery attempts the broker moves it to the
+                  DLQ, where it is visible to operations rather than lost.
+                -->
+                <on-error-continue type="ANY" doc:name="NACK for redelivery">
+                    <logger level="ERROR" doc:name="Log processing failure"
+                            message='#["Switching outcome processing failed, NACKing for redelivery. correlationId=" ++ correlationId ++ " error=" ++ (error.description default "")]' />
+                    <anypoint-mq:nack doc:name="NACK"
+                                      config-ref="Anypoint_MQ_Config"
+                                      ackToken="#[vars.ackToken]" />
+                </on-error-continue>
+            </error-handler>
+        </try>
+    </flow>
+
+</mule>

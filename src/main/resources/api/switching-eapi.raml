@@ -1,0 +1,173 @@
+#%RAML 1.0
+title: Switching Experience API
+version: v1
+mediaType: application/json
+description: |
+  Channel-facing API for the ARERA-regulated gas switching process
+  (cambio venditore), consumed by the B2C portal, the B2B portal and
+  Salesforce.
+
+  Regulatory basis: Delibera ARERA 77/2018/R/com. The switching effective
+  date must be the first day of a month, and the request must be submitted
+  by the 10th day of the preceding month.
+
+  Outcomes are asynchronous: submission returns 202 with a request id, and
+  the distributor's admissibility decision follows separately.
+
+types:
+
+  Error:
+    type: object
+    properties:
+      error:
+        type: object
+        properties:
+          code: string
+          message: string
+          correlationId: string
+          timestamp: datetime
+
+  PDR:
+    type: string
+    pattern: "^[0-9]{14}$"
+    description: Punto di Riconsegna — 14-digit gas supply point identifier.
+
+  SwitchingRequest:
+    type: object
+    properties:
+      pdr: PDR
+      customerType:
+        enum: [RESIDENTIAL, BUSINESS]
+      fiscalCode:
+        type: string
+        description: |
+          Codice fiscale (16 chars) for RESIDENTIAL, partita IVA (11 digits)
+          for BUSINESS.
+      firstName?: string
+      lastName?: string
+      businessName?: string
+      effectiveDate:
+        type: date-only
+        description: |
+          Must be the first day of a month, and the submission window
+          (day 10 of the preceding month) must still be open.
+      distributorCode?:
+        type: string
+        description: |
+          Optional. SII resolves the distributor from the PDR; supply this
+          only when known with confidence.
+
+  SwitchingAccepted:
+    type: object
+    properties:
+      requestId: string
+      status:
+        enum: [SUBMITTED, ALREADY_SUBMITTED]
+      pdr: PDR
+      effectiveDate: date-only
+      outcomeExpectedBy?: date-only
+      message: string
+
+  SwitchingStatus:
+    type: object
+    properties:
+      requestId: string
+      pdr?: PDR
+      effectiveDate?: date-only
+      status:
+        enum: [SUBMITTED, UNDER_REVIEW, ACCEPTED, REJECTED, CANCELLED, UNKNOWN]
+      protocolStatus?: string
+      submittedAt?: string
+      lastUpdatedAt?: string
+      rejection?:
+        type: object
+        properties:
+          reasonCode: string
+          reasonText: string
+
+/switching-requests:
+  post:
+    description: |
+      Submit a switching request. Validated against ARERA admissibility
+      rules before transmission to SII.
+    headers:
+      x-channel:
+        enum: [B2C_PORTAL, B2B_PORTAL, SALESFORCE, CONTACT_CENTRE]
+        description: Origin channel, retained for commercial-quality evidencing.
+      x-operator-id?:
+        type: string
+        description: Agent identifier where the request is agent-initiated.
+      x-client-request-id?:
+        type: string
+        description: |
+          Caller-supplied correlation reference. Echoed to SII and returned
+          on the asynchronous outcome.
+    body: SwitchingRequest
+    responses:
+      202:
+        description: Accepted and submitted to SII. Outcome follows asynchronously.
+        body: SwitchingAccepted
+      200:
+        description: A request for this supply point and effective date already exists.
+        body: SwitchingAccepted
+      400:
+        body: Error
+      422:
+        description: |
+          Well-formed but not admissible under ARERA rules — typically the
+          submission window has closed, or the effective date is not the
+          first of a month.
+        body: Error
+      504:
+        description: SII unavailable. Retry before the submission window closes.
+        body: Error
+
+  /{requestId}:
+    uriParameters:
+      requestId: string
+    get:
+      description: Retrieve the current status of a switching request.
+      responses:
+        200:
+          body: SwitchingStatus
+        404:
+          body: Error
+        504:
+          body: Error
+
+/supply-points/{pdr}/eligibility:
+  uriParameters:
+    pdr: PDR
+  get:
+    description: |
+      Pre-flight regulatory calendar for a supply point. Returns the
+      effective dates currently reachable and their submission deadlines,
+      so a front end can disable unavailable options before submission.
+    queryParameters:
+      effectiveDate?:
+        type: date-only
+        description: Optional date to assess specifically.
+    responses:
+      200:
+        body:
+          type: object
+          properties:
+            pdr: PDR
+            earliestAvailableEffectiveDate: date-only
+            currentWindow:
+              type: object
+              properties:
+                deadlineDay: integer
+                openForNextMonth: boolean
+                note: string
+            availableDates:
+              type: array
+              items:
+                type: object
+                properties:
+                  effectiveDate: date-only
+                  submissionDeadline: date-only
+                  available: boolean
+            regulatoryBasis: string
+      400:
+        body: Error
