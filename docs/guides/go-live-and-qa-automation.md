@@ -1,175 +1,158 @@
 # Taking this platform live on Anypoint, and automating the QA around it
 
-A working guide, start to finish: Anypoint Studio → VS Code → Anypoint Platform
-→ GitHub Actions → an API gateway test suite that actually proves the policies
-are on.
+Start to finish: a local build, a governed API on CloudHub 2.0, a GitHub Actions
+pipeline, and a test suite that proves the gateway policies are actually on.
 
-Everything referenced here exists in the repository. Where a step needs a value
-only you can supply — an org ID, a Connected App secret — the guide says so and
-tells you where to find it.
+**Read this first.** The steps are ordered so that each one produces something
+the next one needs. Working out of order is the main way this goes wrong — most
+obviously, the pipeline needs your deployed app's URL, which does not exist
+until you have deployed once. So the first deployment is done by hand, and CI is
+wired up afterwards with complete information.
 
-**Time to first deployed API:** about 2 hours if the Anypoint trial is already
-active. The QA automation adds another 1–2 hours, mostly waiting on builds.
-
----
-
-## Contents
-
-1. [Before you start](#1-before-you-start)
-2. [Anypoint Platform: the control-plane setup](#2-anypoint-platform-the-control-plane-setup)
-3. [Anypoint Studio: run it locally](#3-anypoint-studio-run-it-locally)
-4. [VS Code: the day-to-day editor](#4-vs-code-the-day-to-day-editor)
-5. [Publish the API spec and create the governed instance](#5-publish-the-api-spec-and-create-the-governed-instance)
-6. [Wire up GitHub](#6-wire-up-github)
-7. [First deployment through the pipeline](#7-first-deployment-through-the-pipeline)
-8. [The QA automation suite](#8-the-qa-automation-suite)
-9. [Gateway policy testing — the part most people skip](#9-gateway-policy-testing--the-part-most-people-skip)
-10. [Performance testing](#10-performance-testing)
-11. [Troubleshooting](#11-troubleshooting)
-12. [What this maps to on a job description](#12-what-this-maps-to-on-a-job-description)
+**Time:** roughly 2 hours to a deployed, governed API. The QA automation adds
+another 1–2, mostly waiting on builds.
 
 ---
 
-## 1. Before you start
+## The order, at a glance
 
-### Accounts and tooling
+| # | Do this | You end up with | Which unblocks |
+|---|---|---|---|
+| **A. Prepare** ||||
+| 1 | Install tooling, check the trial's limits | JDK 17, Maven, Studio, VS Code | everything |
+| 2 | Anypoint: org ID, environments, Connected App | org UUID, client ID + secret | 3, 8, 11 |
+| 3 | Maven `settings.xml` with Exchange credentials | working dependency resolution | every `mvn` command below |
+| **B. Prove the code before touching the platform** ||||
+| 4 | Clone, bootstrap keystores, `mvn test` | a green MUnit run | confidence that failures later are platform, not code |
+| 5 | Run it in Anypoint Studio | the API on `localhost:8082` | 6 |
+| 6 | Set up VS Code | your day-to-day editor | — |
+| **C. Register the API with the platform** ||||
+| 7 | Publish the RAML to Exchange | a versioned API asset | 8 |
+| 8 | API Manager: one instance per environment, + policies, + SLA tiers | three **API instance IDs**, client credentials | 10, 11, 15 |
+| 9 | Read the CloudHub 2.0 target name | `ch2.target` value for `pom.xml` | 10 |
+| **D. Deploy once, by hand** ||||
+| 10 | `mvn deploy -DmuleDeploy -Pdev` from your machine | **the app URL** | 11 |
+| **E. Hand it to CI** ||||
+| 11 | GitHub secrets (URL included) + environments | a fully configured pipeline | 12 |
+| 12 | Push to `main` | green first run, dev → test → prod | 13 |
+| **F. QA automation** ||||
+| 13 | Run the functional suites | Karate, REST Assured, Newman results | — |
+| 14 | Run the gateway policy suite | proof the policies bind and enforce | — |
+| 15 | Run the JMeter peak-day profile | a performance regression baseline | — |
+
+Everything referenced exists in the repository. Where a step needs a value only
+you can supply, the guide says where to find it.
+
+---
+
+# Part A — Prepare
+
+## 1. Tooling, and what the trial will and won't give you
+
+### Install
 
 | Thing | Where | Notes |
 |---|---|---|
-| Anypoint Platform trial | [anypoint.mulesoft.com/login/signup](https://anypoint.mulesoft.com/login/signup) | 30 days. You have this already. |
-| Anypoint Studio 7.x | [mulesoft.com/lp/dl/studio](https://www.mulesoft.com/lp/dl/studio) | Eclipse-based. Needed for the visual flow editor and the embedded runtime. |
-| JDK 17 | Temurin | Mule 4.6+ runs on 17. Check with `java -version`. |
-| Maven 3.9+ | `brew install maven` | `mvn -v` should report JDK 17. |
-| VS Code | + Anypoint Code Builder extension | For editing, Git work, and DataWeave. |
-| Node 20 | For Newman and the RAML linter | |
-| `gh` CLI | Already authenticated as `tyowusu` | |
+| Anypoint Platform trial | [anypoint.mulesoft.com/login/signup](https://anypoint.mulesoft.com/login/signup) | 30 days. You have this. |
+| Anypoint Studio 7.x | [mulesoft.com/lp/dl/studio](https://www.mulesoft.com/lp/dl/studio) | Eclipse-based. For the visual flow editor and embedded runtime. |
+| JDK 17 | Temurin | Mule 4.6+ runs on 17. `java -version` to check. |
+| Maven 3.9+ | `brew install maven` | `mvn -v` must report JDK 17. |
+| VS Code | + Anypoint Extension Pack | Editing, Git, DataWeave. |
+| Node 20 | | For Newman and the RAML linter. |
+| `gh` CLI | | Already authenticated as `tyowusu`. |
 
-### Know your trial's limits before you design around them
+### Two trial limits that will bite
 
-A trial gives you Design Center, Exchange, one or two environments, API Manager,
-and a small CloudHub allocation. Two things commonly surprise people:
+- **vCores are scarce.** The `dev` profile in `pom.xml` asks for 0.1 vCores and
+  1 replica precisely so a trial can run it. The `prod` profile asks for 2
+  replicas at 0.5 vCores — that will not deploy on a trial, and it should not.
+  It exists to document the production shape.
+- **Anypoint MQ may not be included.** The app declares an MQ config for the
+  asynchronous outcome path. If MQ is unavailable, `switching-outcome-listener`
+  fails to start. Step 5.4 covers disabling it.
 
-- **vCore allocation is small.** The `dev` profile in `pom.xml` requests 0.1
-  vCores and 1 replica precisely so a trial can run it. The `prod` profile asks
-  for 2 replicas at 0.5 vCores — that will not deploy on a trial, and it should
-  not: it exists to document the production shape.
-- **Anypoint MQ may not be included.** The application declares an MQ config for
-  the asynchronous outcome path. If MQ is unavailable on your tenant, the
-  `switching-outcome-listener` flow will fail to start. Section 3 covers how to
-  disable it for a local run.
-
-### One thing that is not obtainable
+### One thing you cannot get at all
 
 The SII (Sistema Informativo Integrato, operated by Acquirente Unico) has **no
 public sandbox**. Access requires accreditation as a Seller and issued client
-certificates. Everything in this repository that touches SII therefore targets a
-mock in dev and test, and the production property file carries
-`REPLACE_FROM_ACCREDITATION_PACK` rather than a guess.
+certificates. Everything here that touches SII targets a mock in dev and test,
+and `prod.yaml` carries `REPLACE_FROM_ACCREDITATION_PACK` rather than a guess.
 
-This is worth being explicit about rather than papering over. A demo that claims
-a live regulated integration it does not have is worse than one that is precise
-about where the boundary is.
+Worth stating plainly rather than papering over. A demo claiming a live
+regulated integration it does not have is worse than one that is precise about
+where the boundary sits.
 
 ---
 
-## 2. Anypoint Platform: the control-plane setup
+## 2. Anypoint: org ID, environments, Connected App
 
-### 2.1 Find your organisation ID
+Do all three now — step 3 and everything after depends on them.
 
-Sign in → **Access Management** → **Organization**. Copy the ID (a UUID).
+### 2.1 Organisation ID
 
-You will need it for `ANYPOINT_ORG_ID`. It appears in the Exchange Maven URL in
+**Access Management → Organization.** Copy the UUID.
+
+This becomes `ANYPOINT_ORG_ID`, and appears in the Exchange Maven URL in
 `pom.xml`'s `distributionManagement` block.
 
-### 2.2 Confirm your environments
+### 2.2 Environments
 
 **Access Management → Environments.** A trial gives you `Sandbox` and
-`Production`. The `pom.xml` profiles map:
+`Production`. The `pom.xml` profiles map onto them:
 
-| Profile | Anypoint environment | App name |
+| Profile | Anypoint environment | Application name |
 |---|---|---|
 | `dev` | Sandbox | `switching-process-api-dev` |
 | `test` | Sandbox | `switching-process-api-test` |
 | `prod` | Production | `switching-process-api` |
 
-`dev` and `test` share the Sandbox environment and are separated by app name.
-On a paid tenant you would give each its own environment; on a trial this is the
-honest compromise, and it is why the two have separate API Manager instances in
-§5 — so a policy change in test cannot silently alter dev.
+`dev` and `test` share Sandbox and are separated by application name. On a paid
+tenant each would get its own environment. On a trial this is the honest
+compromise — and it is why they get *separate API Manager instances* in step 8,
+so a policy change in test cannot silently alter dev.
 
-### 2.3 Create a Connected App
+While you are on this screen, copy each environment's **client ID and secret**
+(shown per environment). These become `ANYPOINT_PLATFORM_CLIENT_ID_DEV` and
+friends, and they are what lets a deployed app authenticate to API Manager for
+autodiscovery.
 
-This is the credential the pipeline uses. **Access Management → Connected Apps →
-Create app.**
+### 2.3 Connected App
+
+This is the credential the pipeline uses. **Access Management → Connected Apps
+→ Create app.**
 
 - **Name:** `github-actions-switching-api`
 - **Type:** *App acts on its own behalf (client credentials)*
 - **Scopes:**
   - Design Center Developer
   - Exchange Contributor
-  - Runtime Manager → *Cloudhub Admin*, *Create Applications*, *Manage Alerts* (Sandbox **and** Production)
-  - API Manager → *Manage APIs Configuration*, *View APIs Configuration*
-  - *Profile* and *View Organization*
+  - Runtime Manager → *Cloudhub Admin*, *Create Applications*, *Manage Alerts* — tick **Sandbox and Production**
+  - API Manager → *Manage APIs Configuration*, *View APIs Configuration* — **Sandbox and Production**
+  - *Profile*, *View Organization*
 
-Copy the **Client ID** and **Client Secret** immediately — the secret is shown
-once.
+Copy the **Client ID** and **Client Secret** now. The secret is shown once.
 
-> **Why a Connected App rather than a username and password.** A Connected App
-> is scoped to exactly the environments and permissions the pipeline needs, can
-> be revoked without touching anyone's account, and does not break the day
-> someone enables MFA or leaves the company. A pipeline authenticating as a
-> person is a pipeline that breaks at the worst possible moment for reasons
+> Only the Runtime Manager and API Manager scopes have an environment picker.
+> Design Center, Exchange, Profile and View Organization are org-level. Miss
+> Production on the Runtime Manager scopes and everything works right up until
+> `deploy-prod`, which fails with a 403 that does not mention scopes.
+
+> **Why a Connected App and not a username and password.** It is scoped to
+> exactly what the pipeline needs, revocable without touching anyone's account,
+> and it does not break the day someone enables MFA or leaves. A pipeline
+> authenticating as a person breaks at the worst possible moment, for reasons
 > unrelated to the code.
-
-### 2.4 Find your CloudHub 2.0 target name
-
-**You are not creating an application here.** The pipeline creates it, with the
-name already set in `pom.xml`. All you need from this step is the name of the
-deployment target, so the pipeline knows where to put it.
-
-**Runtime Manager → Applications → Deploy application.** Look at the
-**Deployment Target** dropdown. On a trial this is a shared space named
-something like `Cloudhub-US-East-2` or `Cloudhub-EU-Central-1`. Copy that value
-exactly, then **close the dialog without deploying**.
-
-Update `ch2.target` in `pom.xml` to match. A wrong target name produces a
-deployment failure whose message does not mention the target, which is an
-unpleasant twenty minutes.
-
-For reference, these are the applications the pipeline will create:
-
-| Maven profile | Application name | Anypoint environment |
-|---|---|---|
-| `dev` | `switching-process-api-dev` | Sandbox |
-| `test` | `switching-process-api-test` | Sandbox |
-| `prod` | `switching-process-api` | Production |
-
-If you do deploy by hand from this dialog — to sanity-check the platform before
-trusting the pipeline, say — name it `switching-process-api-dev` so the first
-pipeline run updates that application rather than creating a second one beside
-it. There is no need to, though: the point of the pipeline is that the first
-deployment is reproducible rather than a thing someone did once by hand and
-then had to remember.
-
-### 2.5 Anypoint MQ (optional on a trial)
-
-If available: **MQ → Destinations**, create three queues per environment —
-`switching-outcome-dev`, `customer-notification-dev`, `switching-manual-review-dev`
-— then **MQ → Client Apps** to get a client ID and secret.
-
-If unavailable, skip it and see §3.4.
 
 ---
 
-## 3. Anypoint Studio: run it locally
+## 3. Maven settings.xml
 
-### 3.1 Import the project
+**Do this before any `mvn` command.** Anypoint Exchange is a private Maven
+repository and the connectors this project depends on are not on Maven Central.
+Without credentials, every build below fails at dependency resolution with a
+401 that does not name the cause.
 
-`File → Import → Anypoint Studio → Anypoint Studio project from File System`,
-point at your clone, `Finish`.
-
-Studio resolves dependencies from Exchange, so add your Connected App
-credentials to `~/.m2/settings.xml` first:
+Create or edit `~/.m2/settings.xml`:
 
 ```xml
 <settings>
@@ -183,88 +166,121 @@ credentials to `~/.m2/settings.xml` first:
 </settings>
 ```
 
-The `~~~Client~~~` username and the `~?~` separator are literal. This is
+The `~~~Client~~~` username and the `~?~` separator are **literal**. That is
 MuleSoft's convention for Connected App credentials over Maven, and it is not
-guessable.
+something you would guess.
 
-### 3.2 Generate the local keystores
-
-The application builds a TLS context at startup and resolves its secure
-properties file at the same moment. Neither is lazy, so it cannot boot — and
-therefore cannot run one MUnit test — until those files exist:
+Verify before moving on:
 
 ```bash
-chmod +x scripts/bootstrap-local-dev.sh
-./scripts/bootstrap-local-dev.sh
+cd utility-integration-platform
+mvn -q dependency:resolve
 ```
 
-This produces self-signed certificates valid for a year, plaintext secure
-properties, and passwords that are literally `changeit`. All of it is gitignored
-and worthless by design.
+Anything other than success here means step 2.3 or this file is wrong, and
+fixing it now saves you debugging it inside a CI log later.
+
+---
+
+# Part B — Prove the code before touching the platform
+
+The point of this part is diagnostic. If the code builds and its tests pass
+locally, then every failure from Part C onward is a platform or configuration
+problem — which is a much smaller search space.
+
+## 4. Clone, bootstrap, test
+
+```bash
+git clone https://github.com/tyowusu/utility-integration-platform.git
+cd utility-integration-platform
+
+chmod +x scripts/bootstrap-local-dev.sh
+./scripts/bootstrap-local-dev.sh
+
+mvn clean test -Dmule.env=local -Dmule.secure.key=localdevkey12345
+```
+
+### What the bootstrap script is for
+
+The application builds a TLS context at startup and resolves its secure
+properties file at the same moment. Neither is lazy — so it cannot boot, and
+therefore cannot run a single MUnit test, until those files exist on the
+classpath.
+
+The script produces self-signed certificates valid for a year, a plaintext
+secure-properties file, and passwords that are literally `changeit`. All of it
+is gitignored and worthless by design.
 
 The plaintext part is worth understanding: the secure properties module only
-attempts decryption on values wrapped in `![...]` and passes anything else
-through untouched. So a plaintext local file resolves with any key, which keeps
+attempts decryption on values wrapped in `![...]`, and passes anything else
+through untouched. So a plaintext local file resolves with any key. That keeps
 the local loop free of a key-management step while leaving the production
 mechanism — encrypted values, injected key — exactly as it is.
 
-### 3.3 Run
+### Expected result
 
-Right-click the project → `Run As → Mule Application`. Set VM arguments:
+MUnit runs, coverage lands in `target/site/munit/coverage/`. The build fails
+below the threshold in `pom.xml`, which starts modest on purpose: a coverage
+gate you cannot meet on day one gets switched off on day two. Ratchet it up as
+the suite grows.
+
+---
+
+## 5. Anypoint Studio
+
+### 5.1 Import
+
+`File → Import → Anypoint Studio → Anypoint Studio project from File System`,
+point at your clone, `Finish`. Studio reads the same `~/.m2/settings.xml` you
+created in step 3, so dependency resolution should already work.
+
+### 5.2 Run
+
+Right-click the project → `Run As → Mule Application`. VM arguments:
 
 ```
 -Dmule.env=local -Dmule.secure.key=localdevkey12345
 ```
 
-The API is at `https://localhost:8082/api`. Try:
+Then:
 
 ```bash
 curl -k https://localhost:8082/api/supply-points/12345678901234/eligibility
 ```
 
-You should get the regulatory calendar. Note there is **no gateway** in front of
-a Studio-launched runtime — no policies, no client-id enforcement. That is
-expected, and it is exactly why the gateway suite in §9 exists as a separate
-thing that only runs against a deployed app.
+You should get the regulatory calendar back.
 
-### 3.4 If Anypoint MQ is not available
+### 5.3 Note what is *not* here
+
+There is **no gateway** in front of a Studio-launched runtime. No policies, no
+client-id enforcement, no rate limiting. That is expected, and it is precisely
+why the gateway suite (step 14) is a separate thing that only runs against a
+deployed application. Nothing you do in Studio can tell you whether your
+policies work.
+
+### 5.4 If Anypoint MQ is unavailable
 
 Comment out the `anypoint-mq:config` element in
 `src/main/mule/global-config.xml` and the flows in
 `src/main/mule/process/switching-outcome-listener.xml`. The submit and
 eligibility paths — everything the QA suite exercises — do not depend on MQ.
 
-### 3.5 Run MUnit
-
-Right-click `src/test/munit` → `Run MUnit suites`, or:
-
-```bash
-mvn clean test -Dmule.env=local -Dmule.secure.key=localdevkey12345
-```
-
-Coverage lives in `target/site/munit/coverage/`. The build fails below the
-threshold set in `pom.xml`, which starts modest deliberately — a coverage gate
-you cannot meet on day one gets switched off on day two. Ratchet it up as the
-suite grows.
-
 ---
 
-## 4. VS Code: the day-to-day editor
+## 6. VS Code
 
-Studio is where you draw flows. VS Code is where you do everything else, and for
-most days it is the better tool.
+Studio is where you draw flows. VS Code is where you do everything else.
 
-### 4.1 Extensions
+### 6.1 Extensions
 
 - **Anypoint Extension Pack** (Salesforce) — Mule XML autocomplete, DataWeave
-  language support, project scaffolding
 - **Extension Pack for Java** (Microsoft) — for the REST Assured suite
 - **Cucumber (Gherkin) Full Support** — for the Karate feature files
 - **XML** (Red Hat) — schema validation on the Mule configs
 
-### 4.2 Workspace settings
+### 6.2 Workspace settings
 
-Create `.vscode/settings.json`:
+`.vscode/settings.json`:
 
 ```json
 {
@@ -278,7 +294,7 @@ Create `.vscode/settings.json`:
 }
 ```
 
-### 4.3 Tasks worth binding
+### 6.3 Tasks
 
 `.vscode/tasks.json`:
 
@@ -297,55 +313,97 @@ Create `.vscode/settings.json`:
       "type": "shell",
       "command": "cd qa-automation && mvn test -Dtest=SwitchingFunctionalTest#smoke -Dkarate.env=dev -Dapi.base.url=$API_BASE_URL_DEV",
       "group": "test"
-    },
-    {
-      "label": "QA: Newman",
-      "type": "shell",
-      "command": "cd qa-automation/postman && newman run switching-api.postman_collection.json -e env.dev.postman_environment.json --env-var client_secret=$CLIENT_SECRET --insecure"
     }
   ]
 }
 ```
 
-### 4.4 The honest division of labour
+### 6.4 The honest division of labour
 
-Use Studio for: visual flow editing, the DataWeave preview pane (genuinely
-excellent — live output against sample input), the embedded runtime debugger.
+Studio for: visual flow editing, the DataWeave preview pane (live output against
+sample input — genuinely excellent), the embedded runtime debugger.
 
-Use VS Code for: everything textual. The Mule XML is more legible as text than
-as a canvas once you know what you are reading, Git conflicts in flow XML are
-resolvable in a text editor and miserable in Studio, and the whole QA suite is
-Java, JavaScript and Gherkin.
+VS Code for: everything textual. Mule XML reads better as text than as a canvas
+once you know what you are looking at, Git conflicts in flow XML are tractable
+in a text editor and miserable in Studio, and the entire QA suite is Java,
+JavaScript and Gherkin.
 
 ---
 
-## 5. Publish the API spec and create the governed instance
+# Part C — Register the API with the platform
 
-This is the step that turns a running application into a *managed* API, and it
-is where the gateway policies the job description asks about actually live.
+## 7. Publish the RAML to Exchange
 
-### 5.1 Publish the RAML to Exchange
-
-**Design Center → Create → Import from file**, upload
+**Design Center → Create → Import from file.** Upload
 `src/main/resources/api/switching-eapi.raml`, name it
 `Switching Experience API`, then **Publish to Exchange** as version `1.0.0`.
 
-### 5.2 Create the API instance in API Manager
+### 7.1 Making the publish mean something
+
+As shipped, the application reads the RAML from its own classpath:
+
+```xml
+<apikit:config name="switching-eapi-config" api="api/switching-eapi.raml" ... />
+```
+
+That builds anywhere, with no platform access — which is why the repository
+ships that way. But it also means the Exchange copy and the implementation copy
+are two files that a human keeps in step, which is exactly the coupling
+API-led design is meant to remove.
+
+Once Exchange has the asset, you can point the implementation at it instead.
+Add the dependency to `pom.xml`:
+
+```xml
+<dependency>
+  <groupId>YOUR_ORG_ID</groupId>
+  <artifactId>switching-experience-api</artifactId>
+  <version>1.0.0</version>
+  <classifier>raml</classifier>
+  <type>zip</type>
+</dependency>
+```
+
+and change the APIkit config:
+
+```xml
+<apikit:config name="switching-eapi-config"
+    api="resource::YOUR_ORG_ID:switching-experience-api:1.0.0:raml:zip:switching-eapi.raml"
+    outboundHeadersMapName="outboundHeaders"
+    httpStatusVarName="httpStatus" />
+```
+
+Now a spec change is a version bump in `pom.xml`, visible in a diff and
+reviewable, rather than an edit two people make in two places and reconcile
+later.
+
+The trade-off is that the build then requires Exchange access, so a fresh clone
+cannot compile offline. Both positions are defensible; make it deliberately.
+
+---
+
+## 8. API Manager: instances, policies, clients
+
+This is where the gateway policies actually live, and where you collect the IDs
+the deployment needs.
+
+### 8.1 Create an instance per environment
 
 **API Manager → Add API → Add new API**:
 
 - **Add from Exchange** → `Switching Experience API`
 - **Runtime:** Mule 4
-- **Deployment:** *Hybrid / Endpoint with proxy* → choose **Basic endpoint** with
-  autodiscovery (no proxy — the policy runs inside your app's runtime)
+- **Deployment:** *Endpoint with proxy* → choose **Basic endpoint** with
+  autodiscovery. No proxy — the policies run inside your app's own runtime.
 - **Environment:** Sandbox
 
-Once created, copy the **API Instance ID** from the URL or the summary panel.
-This is `API_INSTANCE_ID_DEV`.
+Copy the **API Instance ID** from the URL or summary panel. That is
+`API_INSTANCE_ID_DEV`.
 
-Repeat for test and production. Three instances, three IDs.
+**Repeat for test and production. Three instances, three IDs.** You need all
+three before step 11.
 
-### 5.3 Understand what autodiscovery does — and how it fails
+### 8.2 What autodiscovery does, and how it fails silently
 
 `src/main/mule/global-config.xml` contains:
 
@@ -353,83 +411,154 @@ Repeat for test and production. Three instances, three IDs.
 <api-gateway:autodiscovery apiId="${api.id}" flowRef="switching-eapi-main"/>
 ```
 
-At startup the runtime calls home to API Manager, says "I am instance
-`${api.id}`", and downloads the policy set attached to it. From then on every
-request through `switching-eapi-main` passes through those policies.
+At startup the runtime calls API Manager, says "I am instance `${api.id}`", and
+downloads the policy set attached to it. From then on every request through
+`switching-eapi-main` passes through those policies.
 
-**The failure mode is silent.** If `api.id` is wrong, or the
+**The failure mode produces no error.** If `api.id` is wrong, or the
 `anypoint.platform.client_id`/`client_secret` pair was not supplied, or the app
-is in a different environment from the instance, then the application *still
-starts and still serves traffic* — ungoverned. No client-id enforcement, no rate
-limiting, no JWT validation. Nothing in the logs announces this.
+is in a different environment from the instance — the application *still starts
+and still serves traffic*, ungoverned. No client-id enforcement, no rate
+limiting, no JWT validation, and nothing in the logs to say so.
 
-That is why the very first assertion in the gateway suite is "an anonymous
-request must be refused". It reads like a security test; it is really an
-autodiscovery health check.
+That is why the first assertion in the gateway suite is "an anonymous request
+must be refused". It reads as a security test. It is really an autodiscovery
+health check.
 
-### 5.4 Apply the policies
+### 8.3 Apply the policies
 
 **API Manager → your instance → Policies → Add policy.**
 
 | Policy | Configuration | Why |
 |---|---|---|
-| **Client ID enforcement** | Credentials in headers `client_id` / `client_secret` | Identifies which consumer — B2C portal, B2B portal, Salesforce — made each call. Under ARERA commercial-quality reporting the Seller must evidence request origin, so this is a compliance control, not just access control. |
-| **OpenID Connect / JWT validation** | Your IdP's JWKS URL; validate `exp`, `aud`, signature | Machine-to-machine auth for the portals. Validate the signature *and* the audience — a policy that checks claims without verifying the signature accepts a forged token, and every happy-path test still passes. |
-| **Rate limiting — SLA based** | Tiers per consumer | The portals and Salesforce have very different traffic shapes. One shared limit means the B2C portal's peak throttles the contact centre's agents. |
+| **Client ID enforcement** | Credentials in headers `client_id` / `client_secret` | Identifies which consumer — B2C portal, B2B portal, Salesforce — made each call. Under ARERA commercial-quality reporting the Seller must evidence request origin, so this is a compliance control, not only an access control. |
+| **OpenID Connect / JWT validation** | Your IdP's JWKS URL; validate `exp`, `aud`, signature | Validate the signature **and** the audience. A policy that reads claims without verifying the signature accepts a forged token — and every happy-path test still passes. |
+| **Rate limiting — SLA based** | Tiers per consumer | Portals and Salesforce have very different traffic shapes. One shared limit means the B2C peak throttles the contact centre's agents. |
 | **Spike control** | e.g. 20/sec, queuing enabled | Absorbs the 10th-of-the-month burst rather than rejecting it. Different intent from rate limiting: spike control smooths, rate limiting enforces a contract. |
-| **HTTP caching** | On `GET /supply-points/{pdr}/eligibility`, short TTL | The regulatory calendar changes once a day at most. Every portal form load hits it. |
+| **HTTP caching** | On `GET /supply-points/{pdr}/eligibility`, short TTL | The regulatory calendar changes once a day at most, and every portal form load hits it. |
 
-Set the **test** environment's rate limit low — say 20 requests per 10 seconds.
-Section 9 explains why.
+Set the **test** instance's rate limit deliberately low — say 20 requests per
+10 seconds. Step 14 explains why.
 
-### 5.5 Create SLA tiers and register clients
+### 8.4 SLA tiers and client applications
 
-**API Manager → instance → SLA tiers.** Create at least:
+**API Manager → instance → SLA tiers:**
 
 - `portal-tier` — 1000 req/min
 - `salesforce-tier` — 200 req/min
 - `qa-tier` — 30 req/min *(low on purpose, so CI can prove throttling works)*
 
 Then **Exchange → your API → Request access**, creating a client application per
-consumer. Each gets a client ID and secret. Create one deliberately **without**
-an approved contract — that is `UNAPPROVED_CLIENT_ID`, used to prove that
-client-id enforcement rejects an unregistered caller.
+consumer. Each yields a client ID and secret.
+
+Create one client **without** an approved contract. That is
+`UNAPPROVED_CLIENT_ID` — used to prove client-id enforcement rejects an
+unregistered caller.
 
 ---
 
-## 6. Wire up GitHub
+## 9. Find the CloudHub 2.0 target name
 
-### 6.1 Secrets
+**You are not creating an application here.** Step 10 creates it, with the name
+already set in `pom.xml`. All you need is the deployment target name.
+
+**Runtime Manager → Applications → Deploy application.** Look at the
+**Deployment Target** dropdown — on a trial this is a shared space named
+something like `Cloudhub-US-East-2` or `Cloudhub-EU-Central-1`. Copy the value
+exactly, then **close the dialog without deploying**.
+
+Set `ch2.target` in `pom.xml` to match. A wrong target name produces a
+deployment failure whose message does not mention the target, which is an
+unpleasant twenty minutes.
+
+---
+
+# Part D — Deploy once, by hand
+
+## 10. The first deployment
+
+Do this from your machine, not from CI. It is what produces the application URL
+that CI needs, and it isolates deployment problems from pipeline problems —
+debugging both at once through a build log is miserable.
+
+```bash
+mvn clean deploy -DmuleDeploy -Pdev \
+  -DconnectedApp.clientId=$ANYPOINT_CLIENT_ID \
+  -DconnectedApp.clientSecret=$ANYPOINT_CLIENT_SECRET \
+  -Danypoint.orgId=$ANYPOINT_ORG_ID \
+  -Dmule.secure.key=$MULE_SECURE_KEY_DEV \
+  -Dautodiscovery.clientId=$ANYPOINT_PLATFORM_CLIENT_ID_DEV \
+  -Dautodiscovery.clientSecret=$ANYPOINT_PLATFORM_CLIENT_SECRET_DEV \
+  -Dapi.id=$API_INSTANCE_ID_DEV
+```
+
+Every one of those values came from steps 2 and 8.
+
+### 10.1 Confirm it deployed *and* bound
+
+**Runtime Manager → Applications →** `switching-process-api-dev`. Copy the
+public URL. Then:
+
+```bash
+# Should return 200 and the regulatory calendar
+curl -k "$APP_URL/api/supply-points/12345678901234/eligibility" \
+  -H "client_id: $QA_CLIENT_ID" -H "client_secret: $QA_CLIENT_SECRET"
+
+# Should return 401 or 403 — this is the autodiscovery check
+curl -k -o /dev/null -w "%{http_code}\n" \
+  "$APP_URL/api/supply-points/12345678901234/eligibility"
+```
+
+If the second command returns **200**, the app deployed but never bound to its
+API Manager instance. It is serving traffic ungoverned. Check `api.id` against
+the instance *in this environment*, and confirm the platform client ID and
+secret were passed. Do not proceed until that second call is refused — every
+gateway test downstream assumes it.
+
+### 10.2 Keep the URL
+
+You now have `API_BASE_URL_DEV`. Repeat step 10 with `-Ptest` and the test
+credentials to get `API_BASE_URL_TEST`. Leave production for the pipeline.
+
+---
+
+# Part E — Hand it to CI
+
+## 11. GitHub secrets and environments
+
+You now have every value the pipeline needs — including the URLs, which is the
+whole reason this step comes after step 10 rather than before it.
+
+### 11.1 Secrets
 
 **Repository → Settings → Secrets and variables → Actions.**
 
-| Secret | Where it comes from |
+| Secret | From |
 |---|---|
-| `ANYPOINT_ORG_ID` | Access Management → Organization |
-| `ANYPOINT_CONNECTED_APP_CLIENT_ID` | §2.3 |
-| `ANYPOINT_CONNECTED_APP_CLIENT_SECRET` | §2.3 |
-| `MULE_SECURE_KEY_DEV` / `_TEST` / `_PROD` | You generate these — 16 or 32 chars, one per environment |
-| `ANYPOINT_PLATFORM_CLIENT_ID_DEV` / `_TEST` / `_PROD` | Access Management → Environments → *(env)* → client ID |
-| `ANYPOINT_PLATFORM_CLIENT_SECRET_DEV` / `_TEST` / `_PROD` | Same screen |
-| `API_INSTANCE_ID_DEV` / `_TEST` / `_PROD` | §5.2 |
-| `API_BASE_URL_DEV` / `_TEST` / `_PROD` | Runtime Manager, after first deploy |
-| `TOKEN_URL_DEV` / `_TEST` / `_PROD` | Your identity provider's token endpoint |
-| `API_CLIENT_ID` / `API_CLIENT_SECRET` | §5.5, the QA-tier client |
-| `UNAPPROVED_CLIENT_ID` / `UNAPPROVED_CLIENT_SECRET` | §5.5, the client with no contract |
-
-Set them quickly with the CLI:
+| `ANYPOINT_ORG_ID` | step 2.1 |
+| `ANYPOINT_CONNECTED_APP_CLIENT_ID` | step 2.3 |
+| `ANYPOINT_CONNECTED_APP_CLIENT_SECRET` | step 2.3 |
+| `ANYPOINT_PLATFORM_CLIENT_ID_DEV` / `_TEST` / `_PROD` | step 2.2 |
+| `ANYPOINT_PLATFORM_CLIENT_SECRET_DEV` / `_TEST` / `_PROD` | step 2.2 |
+| `API_INSTANCE_ID_DEV` / `_TEST` / `_PROD` | step 8.1 |
+| `API_BASE_URL_DEV` / `_TEST` | **step 10** |
+| `API_BASE_URL_PROD` | after the first prod deploy — see 12.3 |
+| `MULE_SECURE_KEY_DEV` / `_TEST` / `_PROD` | you generate — 16 or 32 chars, **one per environment** |
+| `TOKEN_URL_DEV` / `_TEST` / `_PROD` | your identity provider's token endpoint |
+| `API_CLIENT_ID` / `API_CLIENT_SECRET` | step 8.4, the QA-tier client |
+| `UNAPPROVED_CLIENT_ID` / `UNAPPROVED_CLIENT_SECRET` | step 8.4, the client with no contract |
 
 ```bash
 gh secret set ANYPOINT_ORG_ID --body "your-org-uuid"
-gh secret set ANYPOINT_CONNECTED_APP_CLIENT_ID --body "..."
-gh secret set ANYPOINT_CONNECTED_APP_CLIENT_SECRET --body "..."
+gh secret set API_BASE_URL_DEV --body "https://switching-process-api-dev....cloudhub.io"
+# ...and so on
 ```
 
-Note the environment-scoped ones are *distinct per environment*. Using one
-`MULE_SECURE_KEY` everywhere means a leaked dev key decrypts production
-secrets — which is the whole mechanism, undone.
+The per-environment secrets are genuinely distinct. One `MULE_SECURE_KEY`
+across all three means a leaked dev key decrypts production secrets — the whole
+mechanism, undone.
 
-### 6.2 GitHub Environments
+### 11.2 Environments
 
 **Settings → Environments.** Create `dev`, `test`, `production`.
 
@@ -437,33 +566,33 @@ On `production`, add **required reviewers**. A production deployment here
 transmits real requests to a regulated counterparty under the Seller's operator
 code. That warrants a human.
 
-### 6.3 The deadline guard
+### 11.3 The deadline guard
 
 `cd-deploy.yml` refuses production deployments between the 8th and 11th of the
-month. Days 8–11 straddle the ARERA submission deadline, when the following
-month's switching requests cluster hard; a rolling restart during that window
-drops submissions that cannot be retried tomorrow, because the window has
-closed and the customer waits an extra month.
+month. Those days straddle the ARERA submission deadline, when the following
+month's requests cluster hard. A rolling restart in that window drops
+submissions that cannot be retried tomorrow — the window has closed and the
+customer waits an extra month.
 
-Override for a genuine incident fix by setting the repository variable
+Override for a genuine incident fix with the repository variable
 `OVERRIDE_DEADLINE_GUARD=true`. It should be a decision, not an accident.
 
 ---
 
-## 7. First deployment through the pipeline
+## 12. Push, and let the pipeline take over
 
-### 7.1 Push and watch
+### 12.1 Push
 
 ```bash
 git add -A
-git commit -m "Add CI/CD pipelines, MUnit suites and QA automation"
+git commit -m "Wire up deployment"
 git push origin main
 ```
 
-**Actions** tab. `CI — build and unit test` runs first, then `CD — publish,
-deploy and verify`.
+**Actions** tab. `CI — build and unit test` runs first, then
+`CD — publish, deploy and verify`.
 
-### 7.2 What happens, in order
+### 12.2 What runs, in order
 
 ```
 build          → mvn verify (MUnit + coverage gate) → publish to Exchange
@@ -475,45 +604,49 @@ deploy-prod    → deadline guard → manual approval → deploy
 verify-prod    → read-only smoke only
 ```
 
-The artifact is built **once**. The same binary is promoted through every
+The artifact is built **once**, and the same binary is promoted through every
 environment. Rebuilding per environment is the most common route to running
-something in production that no environment ever tested — a fresh dependency
+something in production that no environment ever tested: a fresh dependency
 resolution can pull a different patch of a connector, and nothing in the diff
 shows it.
 
-### 7.3 Capture the app URL
+Because you deployed by hand in step 10, `deploy-dev` here is an *update* to an
+existing application rather than a first creation — which is also the path it
+will take on every subsequent run, so you are exercising the real thing.
 
-After `deploy-dev` succeeds, Runtime Manager shows the public URL. Add it as
-`API_BASE_URL_DEV` and re-run — the verify jobs need it.
+### 12.3 Production
 
-### 7.4 Deploy a single environment by hand
+The first production deploy needs approval, then produces a URL. Add it as
+`API_BASE_URL_PROD` so `verify-prod` can smoke it.
+
+### 12.4 Deploying one environment on demand
 
 **Actions → CD — publish, deploy and verify → Run workflow**, pick the
 environment. Useful when you want test without touching dev.
 
 ---
 
-## 8. The QA automation suite
+# Part F — QA automation
 
-Four tools, deliberately overlapping, each earning its place.
+## 13. The suites, and what each is for
 
-### 8.1 What runs where
+Six tools, deliberately overlapping, each earning its place.
 
 | Layer | Tool | Sees the gateway? | Location |
 |---|---|---|---|
 | Flow logic, mocked dependencies | **MUnit** | No | `src/test/munit/` |
 | Scenario / regression | **Karate** | Yes | `qa-automation/src/test/java/features/` |
-| Schema conformance, JWT attacks, concurrency | **REST Assured** | Yes | `qa-automation/src/test/java/io/github/portfolio/qa/restassured/` |
+| Schema conformance, JWT attacks, concurrency | **REST Assured** | Yes | `qa-automation/src/test/java/io/.../restassured/` |
 | Shareable collection, living documentation | **Postman / Newman** | Yes | `qa-automation/postman/` |
 | REST + SOAP end-to-end | **SoapUI / ReadyAPI** | Yes | `qa-automation/soapui/` |
 | Peak-day load | **JMeter** | Yes | `qa-automation/jmeter/` |
 
 The dividing line that matters: **MUnit cannot see the gateway.** It runs the
 application in isolation and mocks its dependencies. Policies are applied by API
-Manager *in front of* the application, so from MUnit's vantage point they do not
-exist. Everything else in the table runs over the wire against a deployed URL.
+Manager in front of the application, so from MUnit's vantage point they do not
+exist. Everything else runs over the wire against a deployed URL.
 
-### 8.2 Run them locally
+### 13.1 Running them
 
 ```bash
 # MUnit — no deployment needed
@@ -521,7 +654,7 @@ mvn clean test -Dmule.env=local -Dmule.secure.key=localdevkey12345
 
 cd qa-automation
 
-# Karate: read-only subset (safe anywhere)
+# Karate: read-only subset (safe against any environment)
 mvn test -Dtest=SwitchingFunctionalTest#smoke \
   -Dkarate.env=dev -Dapi.base.url=$API_BASE_URL_DEV \
   -Dtoken.url=$TOKEN_URL -Dclient.id=$CLIENT_ID -Dclient.secret=$CLIENT_SECRET
@@ -540,66 +673,60 @@ cd postman && newman run switching-api.postman_collection.json \
   -e env.dev.postman_environment.json --env-var "client_secret=$SECRET" --insecure
 ```
 
-Karate writes an HTML report to `target/karate-reports/karate-summary.html`.
-Open it — it is one of the better test reports in circulation.
+Karate writes `target/karate-reports/karate-summary.html`. Open it — one of the
+better test reports in circulation.
 
-### 8.3 Fixtures that do not expire
+### 13.2 Fixtures that do not expire
 
-Every date in every suite is computed at run time relative to today. None is
-hardcoded.
+Every date is computed at run time relative to today. None is hardcoded.
 
-The pattern throughout is *two months ahead, first of the month*. That date is
-inside the submission window on every calendar day, because the deadline for
-month N+2 is day 10 of month N+1 — which has not arrived on any day of month N.
+The pattern is *two months ahead, first of the month*. That date is inside the
+submission window on every calendar day, because the deadline for month N+2 is
+day 10 of month N+1 — which has not arrived on any day of month N.
 
-This is not fussiness. A suite with `"2025-09-01"` in it passes for a few weeks
-and then fails permanently for calendar reasons. The team learns that red is
-normal, and the next real failure goes unnoticed. A fixture that expires is
-worse than no fixture.
+Not fussiness. A suite containing `"2025-09-01"` passes for a few weeks and then
+fails permanently for calendar reasons. The team learns that red is normal, and
+the next real failure goes unnoticed. A fixture that expires is worse than no
+fixture.
 
 The one test that *does* depend on today's date —
 `closed-submission-window-is-rejected` — is conditionally skipped on or before
 the 10th, because on those days the scenario it describes does not exist.
-Skipping is honest. Rewriting the assertion so it passes on every date would
-test nothing.
+Skipping is honest; rewriting the assertion to pass on every date would test
+nothing.
 
-### 8.4 Read the suites for the reasoning
+### 13.3 Worth reading for the reasoning
 
-The test names and comments carry the argument, not just the mechanics. A few
-worth reading:
-
-- `duplicate-request-returns-200-not-a-second-sii-submission` — the assertion
-  that matters is `verify-call ... times="0"`. Asserting only on the response
-  body would pass even if a duplicate had been sent to SII and then discarded.
+- `duplicate-request-returns-200-not-a-second-sii-submission` — the load-bearing
+  assertion is `verify-call ... times="0"`. Asserting only on the response body
+  would pass even if a duplicate had been sent to SII and then discarded.
 - `SwitchingContractIT.errorResponsesAreSanitised` — SII fault strings can carry
-  hostnames and internal identifiers. They belong in the access-controlled audit
-  log, not in a body that reaches a browser.
+  hostnames and internal identifiers. Those belong in the access-controlled
+  audit log, not in a body that reaches a browser.
 - `GatewaySecurityIT.forgedSignatureIsRefused` — unexpired, well-formed, correct
   claims, wrong signing key. A policy that reads claims without verifying the
   signature accepts this and passes every other test in the class.
 
 ---
 
-## 9. Gateway policy testing — the part most people skip
+## 14. Gateway policy testing
 
-This is the section the API QA Engineer role is really asking about, and it is
-where most portfolios go quiet.
+This is the part most portfolios skip, and the part the API QA Engineer role is
+really asking about.
 
-### 9.1 Why it needs its own suite
+### 14.1 Why it needs its own suite
 
-Three reasons policies go untested:
-
-1. **They are invisible from inside.** MUnit mocks the world and runs the app
-   directly. There is no gateway in the picture.
+1. **Policies are invisible from inside.** MUnit mocks the world and runs the
+   app directly. There is no gateway in the picture.
 2. **Failure is silent.** If autodiscovery does not bind, the app runs fine and
    is simply ungoverned. No error, no warning, no log line.
 3. **Proving a limit requires breaching it.** Nobody wants to breach a rate
    limit in an environment that matters — so the limit stays unproven.
 
-### 9.2 The autodiscovery health check
+### 14.2 The autodiscovery health check
 
 `GatewaySecurityIT.anonymousRequestIsRefused` runs first, and its failure
-message names the three usual causes:
+message names the causes:
 
 ```
 Expected the gateway to refuse an anonymous request but got 200.
@@ -608,10 +735,10 @@ matches the API instance in this environment and that
 anypoint.platform.client_id/secret were supplied at deploy time.
 ```
 
-A test that tells you what to go and look at is worth several that only tell you
-something is wrong.
+This is the same check you ran manually in step 10.1. A test that tells you
+where to look is worth several that only tell you something is wrong.
 
-### 9.3 The JWT cases worth having
+### 14.3 The JWT cases
 
 `TestTokens` mints tokens no legitimate issuer would produce:
 
@@ -626,24 +753,24 @@ All minted at call time, never checked in. A committed expired token stops being
 interesting the moment someone asks "is this still expired?"; one built now with
 a past `exp` is expired on every run, forever, and needs no upkeep.
 
-### 9.4 Proving rate limiting
+### 14.4 Proving rate limiting
 
 `GatewaySecurityIT.rateLimitIsEnforced` fires 60 concurrent requests through a
 10-thread pool and asserts two things:
 
-- at least one comes back **429**
-- **none** comes back 5xx
+- at least one returns **429**
+- **none** returns 5xx
 
 The second is the one people forget. A throttled request must be refused
-cleanly, because a 429 is something clients back off from and a 500 is something
-they retry — and retrying is what deepens an overload rather than relieving it.
+cleanly: a 429 is something clients back off from, a 500 is something they
+retry — and retrying deepens an overload rather than relieving it.
 
-This is why the test environment's rate limit is set deliberately low (§5.4).
-Proving a production-grade limit from a CI runner measures the runner, not the
-gateway. A low limit in test proves the *mechanism* is wired up; capacity is a
-separate question, answered in §10.
+This is why the test instance's rate limit is set low in step 8.3. Proving a
+production-grade limit from a CI runner measures the runner, not the gateway. A
+low limit proves the *mechanism* is wired up. Capacity is a separate question,
+answered in step 15.
 
-### 9.5 Writes never touch production
+### 14.5 Writes never touch production
 
 Enforced in three places, because one is not enough:
 
@@ -655,97 +782,98 @@ Enforced in three places, because one is not enough:
 
 A successful POST against production is a genuine regulated transmission to the
 SII under the Seller's operator code. Cancelling it afterwards still counts
-against the Seller in ARERA commercial-quality reporting. This is not a case
-where a stray test run is merely embarrassing.
+against the Seller in ARERA commercial-quality reporting. A stray test run here
+is not merely embarrassing.
 
 ---
 
-## 10. Performance testing
+## 15. Performance testing
 
-### 10.1 The load profile models the 10th, not the average
+### 15.1 The profile models the 10th, not the average
 
 `qa-automation/jmeter/switching-deadline-peak.jmx` has two thread groups:
 
 - **TG1 — eligibility reads.** Highest volume, tightest budget (800ms). The
-  portal calls this on every form load, so it sits directly in a page render.
+  portal calls this on every form load, so it sits inside a page render.
 - **TG2 — submissions.** Lower volume, far more expensive: traverses Salesforce
-  and then SII over mutual TLS. Budget 3s, against a configured SII timeout of
-  120s.
+  then SII over mutual TLS. Budget 3s, against a configured SII timeout of 120s.
 
 That 3s-versus-120s gap is deliberate. The runtime tolerates a slow SII so a
 submission near the deadline still completes; the performance gate flags
 degradation long before a customer would experience a timeout.
 
-Modelling the average would answer a question nobody has. This platform is fine
-for three weeks a month and then sees a multiple of its ordinary traffic in a
-few hours. "Does the 10th hold?" is the question.
+Modelling the average would answer a question nobody has. This platform is
+comfortable for three weeks a month and then sees a multiple of its ordinary
+traffic in a few hours. "Does the 10th hold?" is the question.
 
-### 10.2 Run it
+### 15.2 Run it
 
 ```bash
 cd qa-automation
 mvn verify -Pperf \
   -Dapi.base.url=$API_BASE_URL_TEST \
-  -Djmeter.access.token=$TOKEN \
+  -Daccess.token=$TOKEN \
   -Dread.threads=50 -Dwrite.threads=10 -Dduration.seconds=300
 ```
 
-HTML dashboard lands in `target/jmeter/reports/`.
+HTML dashboard in `target/jmeter/reports/`.
 
-### 10.3 What the CI numbers are and are not
+### 15.3 What the CI numbers are and are not
 
-A hosted GitHub runner is not a load generator. Treat these results as a
-**regression signal** — "p95 moved 40% against last week's run" — not a capacity
-statement. Sizing for the real peak needs distributed load from an environment
-that resembles the actual callers, which is a separate exercise from this gate.
+A hosted GitHub runner is not a load generator. Treat these as a **regression
+signal** — "p95 moved 40% against last week" — not a capacity statement. Sizing
+for the real peak needs distributed load from an environment resembling the
+actual callers, which is a separate exercise from this gate.
 
 Saying so is better than presenting a runner-generated number as a capacity
 finding.
 
 ---
 
-## 11. Troubleshooting
+## 16. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `401 Unauthorized` resolving dependencies | Exchange credentials missing or malformed | Check `~/.m2/settings.xml`. Username is literally `~~~Client~~~`; separator is literally `~?~`. |
-| App starts locally, `Could not load keystore` | Bootstrap script not run | `./scripts/bootstrap-local-dev.sh` |
+| `401` resolving dependencies | Exchange credentials missing or malformed | Step 3. Username is literally `~~~Client~~~`; separator is literally `~?~`. |
+| `Could not load keystore` on startup | Bootstrap script not run | `./scripts/bootstrap-local-dev.sh` |
 | MUnit fails at startup with a property error | `mule.secure.key` not supplied | Add `-Dmule.secure.key=localdevkey12345` |
-| Deploy fails: *target not found* | `ch2.target` does not match your tenant | Copy the exact name from Runtime Manager → Deploy |
-| Deploy succeeds, app crashes on start | `api.id` invalid or platform client ID/secret missing | Check `API_INSTANCE_ID_*` and `ANYPOINT_PLATFORM_CLIENT_*` secrets |
-| **Gateway suite: anonymous request returns 200** | Autodiscovery did not bind | The app is ungoverned. Check `api.id` matches the instance *in this environment*, and that platform client ID/secret were passed at deploy. |
-| Rate-limit test finds no 429 | Policy absent, or threshold above what CI can reach | Add SLA-based rate limiting to the test instance and set the QA tier low |
-| Karate: connection refused right after deploy | CloudHub reports complete before the replica serves | The workflow's wait loop handles this; locally, give it 60–90s |
-| Newman: `client_secret` undefined | Env file intentionally ships empty | Pass `--env-var "client_secret=$SECRET"` |
-| Coverage gate fails on a fresh clone | Threshold above current suite coverage | Lower it in `pom.xml`, then ratchet up as tests are added |
+| Deploy fails: *target not found* | `ch2.target` mismatch | Step 9 — copy the exact name from the Deploy dialog |
+| Deploy succeeds, app crashes on start | `api.id` invalid, or platform client ID/secret missing | Check `API_INSTANCE_ID_*` and `ANYPOINT_PLATFORM_CLIENT_*` |
+| **Anonymous request returns 200** | Autodiscovery did not bind | The app is ungoverned. Check `api.id` matches the instance *in this environment*, and that platform client ID/secret were passed at deploy. |
+| `403` on `deploy-prod` only | Connected App missing Production scope | Step 2.3 — Runtime Manager scopes need Production ticked too |
+| CI verify jobs fail on first run | `API_BASE_URL_*` not set | You skipped step 10. Deploy by hand, capture the URL, then set the secret. |
+| Rate-limit test finds no 429 | Policy absent, or threshold above what CI can reach | Step 8.3 — add SLA rate limiting and set the QA tier low |
+| Karate: connection refused right after deploy | CloudHub reports complete before the replica serves | The workflow's wait loop handles this; locally, allow 60–90s |
+| Newman: `client_secret` undefined | Env file ships empty on purpose | Pass `--env-var "client_secret=$SECRET"` |
+| Coverage gate fails on a fresh clone | Threshold above current coverage | Lower it in `pom.xml`, ratchet up as tests are added |
 
 ---
 
-## 12. What this maps to on a job description
+## 17. What this maps to on a job description
 
-For the API QA Engineer (MuleSoft) posting, point-by-point:
+For the API QA Engineer (MuleSoft) posting:
 
 | Requirement | Where it lives |
 |---|---|
-| Test strategies for custom APIs and backend APIs behind a gateway | This document, §8–§10; the four-layer split in §8.1 |
-| Functional, integration, regression, end-to-end across distributed systems | MUnit (`src/test/munit/`), Karate features, SoapUI end-to-end project |
-| Validate auth/authz — OAuth2, JWT, API keys | `GatewaySecurityIT`, `TestTokens`, `features/gateway/api-gateway-policies.feature` |
-| Request/response transformation, error handling, edge cases | Schema conformance in `SwitchingContractIT`; sanitisation and 422-vs-400 assertions throughout |
-| Performance, reliability, scalability | `jmeter/switching-deadline-peak.jmx` with SLO assertions as build gates |
-| Automation frameworks for API testing | `qa-automation/` — a standalone Maven project, environment-parameterised |
-| Postman, REST Assured, Karate, SoapUI, ReadyAPI, JMeter | All six, each with a stated reason for being there rather than for the sake of the list |
-| Integrate tests into CI/CD; reusable test data and mock services | `.github/workflows/api-tests.yml` as a reusable workflow; computed fixtures; Karate mock support |
-| Validate gateway configuration — routing, rate limiting, security, transformation | §9 in full; policy setup in §5.4 |
-| End-to-end across gateway, middleware, backend | SoapUI project spans REST experience layer and the SOAP/XML SII boundary |
-| Troubleshoot integration issues across systems | §11; failure messages written to name the likely cause |
-| CI/CD tooling — Jenkins, Azure DevOps, GitHub Actions, GitLab CI | GitHub Actions implemented here; the promotion model (build once, promote the binary) transfers unchanged |
-| Java, Python, JavaScript | Java (REST Assured, JWT minting), JavaScript (Karate config, Postman scripts), Groovy (JMeter, SoapUI) |
+| Test strategies for custom APIs and backend APIs behind a gateway | Steps 13–15; the layer split in 13 |
+| Functional, integration, regression, end-to-end across distributed systems | MUnit, Karate features, SoapUI end-to-end project |
+| Validate auth/authz — OAuth2, JWT, API keys | `GatewaySecurityIT`, `TestTokens`, `features/gateway/` |
+| Request/response transformation, error handling, edge cases | Schema conformance in `SwitchingContractIT`; sanitisation and 422-vs-400 assertions |
+| Performance, reliability, scalability | `switching-deadline-peak.jmx` with SLO assertions as build gates |
+| Automation frameworks for API testing | `qa-automation/` — standalone Maven project, environment-parameterised |
+| Postman, REST Assured, Karate, SoapUI, ReadyAPI, JMeter | All six, each with a stated reason rather than for the sake of the list |
+| Integrate tests into CI/CD; reusable test data and mock services | `api-tests.yml` as a reusable workflow; computed fixtures |
+| Validate gateway config — routing, rate limiting, security, transformation | Step 14 in full; policy setup in step 8.3 |
+| End-to-end across gateway, middleware, backend | SoapUI project spans the REST experience layer and the SOAP/XML SII boundary |
+| Troubleshoot integration issues across systems | Step 16; failure messages written to name the likely cause |
+| CI/CD tooling — Jenkins, Azure DevOps, GitHub Actions, GitLab CI | GitHub Actions here; the build-once-promote-the-binary model transfers unchanged |
+| Java, Python, JavaScript | Java (REST Assured, JWT minting), JavaScript (Karate config, Postman), Groovy (JMeter, SoapUI) |
 
 The thing worth being able to talk about in an interview is not the tool list —
-it is §9.2. Most candidates can describe a rate-limiting policy. Fewer can
+it is 14.2. Most candidates can describe a rate-limiting policy. Fewer can
 explain that autodiscovery failure is silent, that an ungoverned application
-looks identical to a governed one from the outside, and that the first
-assertion in the suite exists to catch it.
+looks identical to a governed one from outside, and that the first assertion in
+the suite exists to catch exactly that.
 
 ---
 
@@ -759,8 +887,6 @@ assertion in the suite exists to catch it.
 │   ├── dwl/                              Regulatory rule modules
 │   └── properties/{local,dev,test,prod}.yaml
 ├── src/test/munit/                       MUnit — flow logic, mocked dependencies
-│   ├── switching-regulatory-rules-test-suite.xml
-│   └── switching-eligibility-test-suite.xml
 ├── qa-automation/                        Black-box suite (separate Maven project)
 │   ├── src/test/java/features/           Karate: switching/ and gateway/
 │   ├── src/test/java/io/.../restassured/ Contract + gateway security
