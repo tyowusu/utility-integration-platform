@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  SOAPUI / READYAPI PROJECT — Switching Experience API
+  ============================================================================
+  Why a SoapUI project exists alongside Karate, REST Assured and Postman.
+
+  The switching flow is REST at the experience layer and SOAP/XML at the SII
+  boundary: the tracciato is a prescribed XML format, transmitted over mutual
+  TLS with a SOAPAction header. SoapUI is the tool in this set that handles
+  both halves natively, which makes it the right place for the end-to-end
+  assertions that span the two protocols — and for the WS-Security and mTLS
+  configuration the SII interface requires.
+
+  Run headless in CI:
+    testrunner.sh -s "Switching Regression" \
+      -Pbase.url=$API_BASE_URL -Paccess.token=$ACCESS_TOKEN \
+      -j -f target/soapui-reports switching-api-soapui-project.xml
+
+  ReadyAPI users can open this file directly; it is a plain SoapUI 5.x project.
+  ============================================================================
+-->
+<con:soapui-project id="switching-api-project"
+                    activeEnvironment="Default"
+                    name="Switching Experience API"
+                    resourceRoot=""
+                    soapui-version="5.7.2"
+                    xmlns:con="http://eviware.com/soapui/config">
+
+  <con:settings/>
+
+  <con:interface xsi:type="con:RestService" id="switching-eapi" wadlVersion="http://wadl.dev.java.net/2009/02"
+                 name="Switching Experience API" type="rest" basePath="/api"
+                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <con:settings/>
+    <con:endpoints>
+      <con:endpoint>${#Project#base.url}</con:endpoint>
+    </con:endpoints>
+
+    <con:resource name="switching-requests" path="/switching-requests" id="res-switching-requests">
+      <con:settings/>
+      <con:parameters/>
+      <con:method name="POST submit" id="m-submit" method="POST">
+        <con:settings/>
+        <con:parameters/>
+        <con:representation type="REQUEST">
+          <con:mediaType>application/json</con:mediaType>
+        </con:representation>
+      </con:method>
+    </con:resource>
+
+    <con:resource name="switching-request-by-id" path="/switching-requests/{requestId}" id="res-status">
+      <con:settings/>
+      <con:parameters>
+        <con:parameter>
+          <con:name>requestId</con:name>
+          <con:style>TEMPLATE</con:style>
+        </con:parameter>
+      </con:parameters>
+      <con:method name="GET status" id="m-status" method="GET">
+        <con:settings/>
+        <con:parameters/>
+      </con:method>
+    </con:resource>
+
+    <con:resource name="eligibility" path="/supply-points/{pdr}/eligibility" id="res-eligibility">
+      <con:settings/>
+      <con:parameters>
+        <con:parameter>
+          <con:name>pdr</con:name>
+          <con:style>TEMPLATE</con:style>
+        </con:parameter>
+      </con:parameters>
+      <con:method name="GET eligibility" id="m-eligibility" method="GET">
+        <con:settings/>
+        <con:parameters/>
+      </con:method>
+    </con:resource>
+  </con:interface>
+
+  <!-- ======================================================================
+       TEST SUITE — regression
+       ====================================================================== -->
+  <con:testSuite id="ts-regression" name="Switching Regression">
+    <con:settings/>
+    <con:runType>SEQUENTIAL</con:runType>
+
+    <!-- ==================================================================
+         Computes the regulatory dates once, at suite start, and publishes
+         them as project properties for every test case that follows.
+         ================================================================== -->
+    <con:testCase id="tc-setup" failOnError="true" failTestCaseOnErrors="true"
+                  keepSession="true" maxResults="0" name="00 Setup — regulatory calendar"
+                  searchProperties="true">
+      <con:settings/>
+      <con:testStep type="groovy" name="Compute dates" id="step-dates">
+        <con:settings/>
+        <con:config>
+          <script><![CDATA[
+import java.time.LocalDate
+
+// Two months ahead, first of the month. Inside the submission window on
+// every calendar day, because the deadline for month N+2 is day 10 of N+1 —
+// which has not arrived on any day of month N. A fixture built this way
+// never expires; a hardcoded date does, and a suite that fails for calendar
+// reasons trains the team to ignore red results.
+def valid = LocalDate.now().plusMonths(2).withDayOfMonth(1).toString()
+
+testRunner.testCase.testSuite.project.setPropertyValue('validEffectiveDate', valid)
+testRunner.testCase.testSuite.project.setPropertyValue('midMonthDate', valid.replaceAll(/-01$/, '-15'))
+testRunner.testCase.testSuite.project.setPropertyValue('pastDate',
+    LocalDate.now().minusMonths(2).withDayOfMonth(1).toString())
+
+// Unique supply point per run, so idempotency assertions do not collide
+// with data seeded by yesterday's run.
+def pdr = '9' + String.valueOf(System.currentTimeMillis()).substring(1)
+testRunner.testCase.testSuite.project.setPropertyValue('uniquePdr', pdr.take(14))
+
+log.info "Regulatory calendar: effectiveDate=${valid}, pdr=${pdr.take(14)}"
+          ]]></script>
+        </con:config>
+      </con:testStep>
+    </con:testCase>
+
+    <!-- ==================================================================
+         Eligibility — read-only, safe against any environment.
+         ================================================================== -->
+    <con:testCase id="tc-eligibility" failOnError="true" failTestCaseOnErrors="true"
+                  keepSession="true" maxResults="0" name="10 Eligibility calendar"
+                  searchProperties="true">
+      <con:settings/>
+      <con:testStep type="restrequest" name="GET eligibility" id="step-eligibility">
+        <con:settings/>
+        <con:config service="Switching Experience API" resourcePath="/supply-points/{pdr}/eligibility"
+                    methodName="GET eligibility">
+          <con:restRequest name="GET eligibility" mediaType="application/json">
+            <con:settings/>
+            <con:endpoint>${#Project#base.url}</con:endpoint>
+            <con:request/>
+            <con:parameters>
+              <con:entry key="pdr" value="12345678901234"/>
+            </con:parameters>
+            <con:credentials>
+              <con:authType>No Authorization</con:authType>
+            </con:credentials>
+            <con:headers>
+              <con:header>
+                <con:name>Authorization</con:name>
+                <con:value>Bearer ${#Project#access.token}</con:value>
+              </con:header>
+            </con:headers>
+            <con:assertion type="Valid HTTP Status Codes" name="200 OK">
+              <con:configuration>
+                <codes>200</codes>
+              </con:configuration>
+            </con:assertion>
+            <con:assertion type="JsonPath Match" name="Deadline day is 10">
+              <con:configuration>
+                <path>$.currentWindow.deadlineDay</path>
+                <content>10</content>
+                <!-- Fixed by Delibera 77/2018/R/com. If this changes, either
+                     the Authority moved the deadline or someone edited the
+                     rule module without updating its documentation. -->
+              </con:configuration>
+            </con:assertion>
+            <con:assertion type="Script Assertion" name="All dates are first-of-month">
+              <con:configuration>
+                <scriptText><![CDATA[
+import groovy.json.JsonSlurper
+def body = new JsonSlurper().parseText(messageExchange.responseContent)
+assert body.availableDates.size() > 0 : "No effective dates offered — the portal has nothing to show"
+body.availableDates.each { d ->
+    assert d.effectiveDate.endsWith('-01') :
+        "Offered ${d.effectiveDate}, which is not the first of a month and would be refused on submission"
+    assert d.submissionDeadline < d.effectiveDate :
+        "Deadline ${d.submissionDeadline} does not precede effective date ${d.effectiveDate}"
+}
+                ]]></scriptText>
+              </con:configuration>
+            </con:assertion>
+            <con:assertion type="Response SLA Assertion" name="Under 800ms">
+              <con:configuration>
+                <SLA>800</SLA>
+              </con:configuration>
+            </con:assertion>
+          </con:restRequest>
+        </con:config>
+      </con:testStep>
+    </con:testCase>
+
+    <!-- ==================================================================
+         Submission — writes. Excluded from production runs.
+         ================================================================== -->
+    <con:testCase id="tc-submit" failOnError="true" failTestCaseOnErrors="true"
+                  keepSession="true" maxResults="0" name="20 Submit switching request"
+                  searchProperties="true">
+      <con:settings/>
+      <con:testStep type="restrequest" name="POST valid request" id="step-submit">
+        <con:settings/>
+        <con:config service="Switching Experience API" resourcePath="/switching-requests"
+                    methodName="POST submit">
+          <con:restRequest name="POST valid request" mediaType="application/json">
+            <con:settings/>
+            <con:endpoint>${#Project#base.url}</con:endpoint>
+            <con:request><![CDATA[{
+  "pdr": "${#Project#uniquePdr}",
+  "customerType": "RESIDENTIAL",
+  "fiscalCode": "RSSMRA80A01H501U",
+  "firstName": "Mario",
+  "lastName": "Rossi",
+  "effectiveDate": "${#Project#validEffectiveDate}"
+}]]></con:request>
+            <con:headers>
+              <con:header>
+                <con:name>Authorization</con:name>
+                <con:value>Bearer ${#Project#access.token}</con:value>
+              </con:header>
+              <con:header>
+                <con:name>x-channel</con:name>
+                <con:value>B2C_PORTAL</con:value>
+              </con:header>
+            </con:headers>
+            <con:assertion type="Valid HTTP Status Codes" name="202 Accepted">
+              <con:configuration>
+                <!-- 202, not 200. The distributor has not ruled yet; a 200
+                     would tell the portal the switch succeeded. -->
+                <codes>202</codes>
+              </con:configuration>
+            </con:assertion>
+            <con:assertion type="Script Assertion" name="Contract shape">
+              <con:configuration>
+                <scriptText><![CDATA[
+import groovy.json.JsonSlurper
+def body = new JsonSlurper().parseText(messageExchange.responseContent)
+assert body.requestId : "No SII request id returned — the asynchronous outcome cannot be reconciled"
+assert body.status == 'SUBMITTED'
+assert body.effectiveDate.endsWith('-01')
+assert body.outcomeExpectedBy : "outcomeExpectedBy drives the portal's customer messaging"
+
+context.testCase.testSuite.project.setPropertyValue('seededRequestId', body.requestId)
+                ]]></scriptText>
+              </con:configuration>
+            </con:assertion>
+          </con:restRequest>
+        </con:config>
+      </con:testStep>
+
+      <con:testStep type="restrequest" name="POST duplicate request" id="step-duplicate">
+        <con:settings/>
+        <con:config service="Switching Experience API" resourcePath="/switching-requests"
+                    methodName="POST submit">
+          <con:restRequest name="POST duplicate request" mediaType="application/json">
+            <con:settings/>
+            <con:endpoint>${#Project#base.url}</con:endpoint>
+            <con:request><![CDATA[{
+  "pdr": "${#Project#uniquePdr}",
+  "customerType": "RESIDENTIAL",
+  "fiscalCode": "RSSMRA80A01H501U",
+  "firstName": "Mario",
+  "lastName": "Rossi",
+  "effectiveDate": "${#Project#validEffectiveDate}"
+}]]></con:request>
+            <con:headers>
+              <con:header>
+                <con:name>Authorization</con:name>
+                <con:value>Bearer ${#Project#access.token}</con:value>
+              </con:header>
+              <con:header>
+                <con:name>x-channel</con:name>
+                <con:value>B2C_PORTAL</con:value>
+              </con:header>
+            </con:headers>
+            <con:assertion type="Valid HTTP Status Codes" name="200 Already submitted">
+              <con:configuration>
+                <codes>200</codes>
+              </con:configuration>
+            </con:assertion>
+            <con:assertion type="Script Assertion" name="Same request id, no second SII transaction">
+              <con:configuration>
+                <scriptText><![CDATA[
+import groovy.json.JsonSlurper
+def body = new JsonSlurper().parseText(messageExchange.responseContent)
+def original = context.testCase.testSuite.project.getPropertyValue('seededRequestId')
+
+assert body.status == 'ALREADY_SUBMITTED'
+assert body.requestId == original :
+    "A second SII transaction was created. SII rejects the duplicate and the rejection " +
+    "counts against the Seller in ARERA commercial-quality reporting."
+                ]]></scriptText>
+              </con:configuration>
+            </con:assertion>
+          </con:restRequest>
+        </con:config>
+      </con:testStep>
+    </con:testCase>
+
+    <!-- ==================================================================
+         Regulatory rejection — 422, not 400.
+         ================================================================== -->
+    <con:testCase id="tc-inadmissible" failOnError="true" failTestCaseOnErrors="true"
+                  keepSession="true" maxResults="0" name="30 Inadmissible requests"
+                  searchProperties="true">
+      <con:settings/>
+      <con:testStep type="restrequest" name="POST mid-month date" id="step-midmonth">
+        <con:settings/>
+        <con:config service="Switching Experience API" resourcePath="/switching-requests"
+                    methodName="POST submit">
+          <con:restRequest name="POST mid-month date" mediaType="application/json">
+            <con:settings/>
+            <con:endpoint>${#Project#base.url}</con:endpoint>
+            <con:request><![CDATA[{
+  "pdr": "12345678901234",
+  "customerType": "RESIDENTIAL",
+  "fiscalCode": "RSSMRA80A01H501U",
+  "effectiveDate": "${#Project#midMonthDate}"
+}]]></con:request>
+            <con:headers>
+              <con:header>
+                <con:name>Authorization</con:name>
+                <con:value>Bearer ${#Project#access.token}</con:value>
+              </con:header>
+              <con:header>
+                <con:name>x-channel</con:name>
+                <con:value>B2C_PORTAL</con:value>
+              </con:header>
+            </con:headers>
+            <con:assertion type="Valid HTTP Status Codes" name="422 Not Admissible">
+              <con:configuration>
+                <codes>422</codes>
+              </con:configuration>
+            </con:assertion>
+            <con:assertion type="Script Assertion" name="Reason is renderable and sanitised">
+              <con:configuration>
+                <scriptText><![CDATA[
+import groovy.json.JsonSlurper
+def body = new JsonSlurper().parseText(messageExchange.responseContent)
+
+assert body.error.correlationId :
+    "No correlation id — a regulator or ombudsman enquiry has no join key to the audit record"
+
+assert body.error.message != 'An unexpected error occurred.' :
+    "Fell through to the generic handler. The customer gets no explanation and calls the contact centre."
+
+// SII fault strings can carry infrastructure identifiers. They belong in the
+// audit log, which is access-controlled, not in a body that reaches a browser.
+['Exception', '.internal', 'stackTrace'].each { leak ->
+    assert !body.error.message.contains(leak) : "Downstream detail leaked: ${leak}"
+}
+                ]]></scriptText>
+              </con:configuration>
+            </con:assertion>
+          </con:restRequest>
+        </con:config>
+      </con:testStep>
+    </con:testCase>
+
+    <!-- ==================================================================
+         Gateway policy — the check that autodiscovery actually bound.
+         ================================================================== -->
+    <con:testCase id="tc-gateway" failOnError="true" failTestCaseOnErrors="true"
+                  keepSession="false" maxResults="0" name="40 Gateway policy enforcement"
+                  searchProperties="true">
+      <con:settings/>
+      <con:testStep type="restrequest" name="GET without credentials" id="step-anon">
+        <con:settings/>
+        <con:config service="Switching Experience API" resourcePath="/supply-points/{pdr}/eligibility"
+                    methodName="GET eligibility">
+          <con:restRequest name="GET without credentials" mediaType="application/json">
+            <con:settings/>
+            <con:endpoint>${#Project#base.url}</con:endpoint>
+            <con:request/>
+            <con:parameters>
+              <con:entry key="pdr" value="12345678901234"/>
+            </con:parameters>
+            <con:assertion type="Script Assertion" name="Refused by the gateway">
+              <con:configuration>
+                <scriptText><![CDATA[
+def status = messageExchange.responseHeaders["#status#"][0]
+
+// This assertion doubles as an autodiscovery health check. If the application
+// deployed but never bound to its API Manager instance, it serves traffic
+// ungoverned and returns 200 here — the one failure mode that produces no
+// error message anywhere in the logs.
+assert status.contains('401') || status.contains('403') :
+    "Expected the gateway to refuse an anonymous request. Got: ${status}. " +
+    "If this is 200, check api.id matches the API instance in this environment " +
+    "and that anypoint.platform.client_id/secret were supplied at deploy time."
+                ]]></scriptText>
+              </con:configuration>
+            </con:assertion>
+          </con:restRequest>
+        </con:config>
+      </con:testStep>
+    </con:testCase>
+  </con:testSuite>
+
+  <con:properties>
+    <con:property>
+      <con:name>base.url</con:name>
+      <con:value>https://localhost:8082</con:value>
+    </con:property>
+    <con:property>
+      <con:name>access.token</con:name>
+      <con:value></con:value>
+    </con:property>
+    <con:property>
+      <con:name>validEffectiveDate</con:name>
+      <con:value></con:value>
+    </con:property>
+    <con:property>
+      <con:name>midMonthDate</con:name>
+      <con:value></con:value>
+    </con:property>
+    <con:property>
+      <con:name>pastDate</con:name>
+      <con:value></con:value>
+    </con:property>
+    <con:property>
+      <con:name>uniquePdr</con:name>
+      <con:value></con:value>
+    </con:property>
+    <con:property>
+      <con:name>seededRequestId</con:name>
+      <con:value></con:value>
+    </con:property>
+  </con:properties>
+</con:soapui-project>

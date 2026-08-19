@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  JMETER — DEADLINE PEAK LOAD PROFILE
+  ============================================================================
+  This plan does not model average traffic, because average traffic is not
+  what breaks this platform.
+
+  Under Delibera 77/2018/R/com the submission deadline is the 10th of the
+  month. Switching requests for the following month therefore cluster hard
+  against that date: the platform sees an ordinary day for roughly three
+  weeks and then a multiple of it in a few hours. The capacity question worth
+  answering is "does the 10th hold?", not "what is the mean?".
+
+  Structure:
+    - Thread Group 1: eligibility reads (the pre-flight the portal calls on
+      every form load — highest volume, tightest latency budget)
+    - Thread Group 2: submissions (lower volume, traverses CRM and SII, the
+      path where a timeout costs a customer a month)
+
+  Assertions are SLO gates, not decoration: `mvn verify -Pperf` fails the
+  build when they trip.
+
+  Run:
+    cd qa-automation
+    mvn verify -Pperf -Dapi.base.url=https://your-test-app.euc1.cloudhub.io
+  ============================================================================
+-->
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="Switching API — deadline peak" enabled="true">
+      <stringProp name="TestPlan.comments">Peak-day load profile for the ARERA switching submission deadline.</stringProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="BASE_URL" elementType="Argument">
+            <stringProp name="Argument.name">BASE_URL</stringProp>
+            <stringProp name="Argument.value">${__P(base.url,https://localhost:8082)}</stringProp>
+          </elementProp>
+          <elementProp name="ACCESS_TOKEN" elementType="Argument">
+            <stringProp name="Argument.name">ACCESS_TOKEN</stringProp>
+            <stringProp name="Argument.value">${__P(access.token,)}</stringProp>
+          </elementProp>
+          <elementProp name="READ_THREADS" elementType="Argument">
+            <stringProp name="Argument.name">READ_THREADS</stringProp>
+            <stringProp name="Argument.value">${__P(read.threads,50)}</stringProp>
+          </elementProp>
+          <elementProp name="WRITE_THREADS" elementType="Argument">
+            <stringProp name="Argument.name">WRITE_THREADS</stringProp>
+            <stringProp name="Argument.value">${__P(write.threads,10)}</stringProp>
+          </elementProp>
+          <elementProp name="RAMP_SECONDS" elementType="Argument">
+            <stringProp name="Argument.name">RAMP_SECONDS</stringProp>
+            <stringProp name="Argument.value">${__P(ramp.seconds,60)}</stringProp>
+          </elementProp>
+          <elementProp name="DURATION_SECONDS" elementType="Argument">
+            <stringProp name="Argument.name">DURATION_SECONDS</stringProp>
+            <stringProp name="Argument.value">${__P(duration.seconds,300)}</stringProp>
+          </elementProp>
+        </collectionProp>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+
+      <!-- Shared HTTP defaults -->
+      <ConfigTestElement guiclass="HttpDefaultsGui" testclass="ConfigTestElement" testname="HTTP Request Defaults" enabled="true">
+        <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+          <collectionProp name="Arguments.arguments"/>
+        </elementProp>
+        <stringProp name="HTTPSampler.connect_timeout">10000</stringProp>
+        <stringProp name="HTTPSampler.response_timeout">30000</stringProp>
+      </ConfigTestElement>
+      <hashTree/>
+
+      <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="HTTP Header Manager" enabled="true">
+        <collectionProp name="HeaderManager.headers">
+          <elementProp name="" elementType="Header">
+            <stringProp name="Header.name">Authorization</stringProp>
+            <stringProp name="Header.value">Bearer ${ACCESS_TOKEN}</stringProp>
+          </elementProp>
+          <elementProp name="" elementType="Header">
+            <stringProp name="Header.name">Accept</stringProp>
+            <stringProp name="Header.value">application/json</stringProp>
+          </elementProp>
+          <elementProp name="" elementType="Header">
+            <stringProp name="Header.name">Content-Type</stringProp>
+            <stringProp name="Header.value">application/json</stringProp>
+          </elementProp>
+          <elementProp name="" elementType="Header">
+            <stringProp name="Header.name">x-channel</stringProp>
+            <stringProp name="Header.value">B2C_PORTAL</stringProp>
+          </elementProp>
+        </collectionProp>
+      </HeaderManager>
+      <hashTree/>
+
+      <!-- =================================================================
+           THREAD GROUP 1 — Eligibility reads
+           The portal calls this on every form load, so it carries the
+           highest request volume and the tightest latency budget: it sits
+           directly in a customer's page render.
+           ================================================================= -->
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="TG1 — Eligibility reads" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">${READ_THREADS}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${RAMP_SECONDS}</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">${DURATION_SECONDS}</stringProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET eligibility" enabled="true">
+          <stringProp name="HTTPSampler.path">${BASE_URL}/api/supply-points/${__RandomString(14,0123456789)}/eligibility</stringProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments"/>
+          </elementProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Status is 200" enabled="true">
+            <collectionProp name="Asserion.test_strings">
+              <stringProp name="49586">200</stringProp>
+            </collectionProp>
+            <stringProp name="Assertion.test_field">Assertion.response_code</stringProp>
+            <intProp name="Assertion.test_type">8</intProp>
+          </ResponseAssertion>
+          <hashTree/>
+
+          <DurationAssertion guiclass="DurationAssertionGui" testclass="DurationAssertion" testname="SLO: under 800ms" enabled="true">
+            <!--
+              800ms is the experience-layer read SLO. This endpoint serves
+              from computed regulatory calendar logic with no downstream I/O,
+              so anything slower indicates runtime pressure rather than a
+              slow dependency — which is precisely the signal wanted from a
+              peak-day run.
+            -->
+            <stringProp name="DurationAssertion.duration">800</stringProp>
+          </DurationAssertion>
+          <hashTree/>
+        </hashTree>
+
+        <ConstantThroughputTimer guiclass="TestBeanGUI" testclass="ConstantThroughputTimer" testname="Pace reads" enabled="true">
+          <intProp name="calcMode">2</intProp>
+          <doubleProp>
+            <name>throughput</name>
+            <value>3000.0</value>
+          </doubleProp>
+        </ConstantThroughputTimer>
+        <hashTree/>
+      </hashTree>
+
+      <!-- =================================================================
+           THREAD GROUP 2 — Submissions
+           Lower volume, far higher cost per request: this path traverses
+           Salesforce and then SII over mutual TLS. On the 10th of the month
+           a timeout here is not recoverable by retrying tomorrow — the
+           window has closed and the customer waits another month.
+           ================================================================= -->
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="TG2 — Switching submissions" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">${WRITE_THREADS}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${RAMP_SECONDS}</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">${DURATION_SECONDS}</stringProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Build request body" enabled="true">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="script">
+import java.time.LocalDate
+
+// Two months ahead, first of the month: inside the submission window on
+// every calendar day, so the plan never starts failing for calendar reasons
+// and masking a genuine performance regression.
+def effectiveDate = LocalDate.now().plusMonths(2).withDayOfMonth(1).toString()
+
+// A unique PDR per request. Reusing one would exercise the duplicate-
+// suppression path — which returns 200 without ever calling SII, and would
+// measure the object store instead of the integration under test.
+def pdr = '9' + String.valueOf(System.nanoTime()).takeRight(13)
+
+vars.put('EFFECTIVE_DATE', effectiveDate)
+vars.put('PDR', pdr)
+          </stringProp>
+        </JSR223PreProcessor>
+        <hashTree/>
+
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="POST switching request" enabled="true">
+          <stringProp name="HTTPSampler.path">${BASE_URL}/api/switching-requests</stringProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp>
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value">{"pdr":"${PDR}","customerType":"RESIDENTIAL","fiscalCode":"RSSMRA80A01H501U","firstName":"Load","lastName":"Test","effectiveDate":"${EFFECTIVE_DATE}"}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Status is 202" enabled="true">
+            <collectionProp name="Asserion.test_strings">
+              <stringProp name="49589">202</stringProp>
+            </collectionProp>
+            <stringProp name="Assertion.test_field">Assertion.response_code</stringProp>
+            <intProp name="Assertion.test_type">8</intProp>
+          </ResponseAssertion>
+          <hashTree/>
+
+          <DurationAssertion guiclass="DurationAssertionGui" testclass="DurationAssertion" testname="SLO: under 3000ms" enabled="true">
+            <!--
+              3s, well inside the 120s SII timeout configured in
+              global-config.xml. The gap is intentional: the runtime tolerates
+              a slow SII so a submission near the deadline still completes,
+              while the performance gate flags degradation long before a
+              customer would experience a timeout.
+            -->
+            <stringProp name="DurationAssertion.duration">3000</stringProp>
+          </DurationAssertion>
+          <hashTree/>
+
+          <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="Request id returned" enabled="true">
+            <stringProp name="JSON_PATH">$.requestId</stringProp>
+            <boolProp name="EXPECT_NULL">false</boolProp>
+            <boolProp name="INVERT">false</boolProp>
+          </JSONPathAssertion>
+          <hashTree/>
+        </hashTree>
+
+        <ConstantThroughputTimer guiclass="TestBeanGUI" testclass="ConstantThroughputTimer" testname="Pace writes" enabled="true">
+          <intProp name="calcMode">2</intProp>
+          <doubleProp>
+            <name>throughput</name>
+            <value>600.0</value>
+          </doubleProp>
+        </ConstantThroughputTimer>
+        <hashTree/>
+      </hashTree>
+
+      <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="Summary Report" enabled="true">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <stringProp name="filename"></stringProp>
+      </ResultCollector>
+      <hashTree/>
+
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

@@ -1,0 +1,519 @@
+{
+  "info": {
+    "name": "Switching Experience API",
+    "description": "Postman/Newman suite for the ARERA-regulated gas switching API.\n\nRun in CI with:\n  newman run qa-automation/postman/switching-api.postman_collection.json \\\n    -e qa-automation/postman/env.dev.postman_environment.json \\\n    --env-var \"client_secret=$CLIENT_SECRET\" \\\n    --reporters cli,junit --reporter-junit-export newman-results.xml\n\nThe collection deliberately overlaps with the Karate suite. That is not duplication for its own sake: Postman is the artefact a non-Java consumer team can open, run and extend, and the collection doubles as living documentation for the portal developers who consume this API.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{access_token}}", "type": "string" }]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// ---------------------------------------------------------------",
+          "// Collection-level pre-request: derive the regulatory calendar.",
+          "//",
+          "// Dates are computed, never hardcoded. A collection with a literal",
+          "// effective date passes for a few weeks and then fails forever,",
+          "// which trains the team to ignore the red result.",
+          "// ---------------------------------------------------------------",
+          "const now = new Date();",
+          "",
+          "const firstOfMonthIn = (months) => {",
+          "    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + months, 1));",
+          "    return d.toISOString().slice(0, 10);",
+          "};",
+          "",
+          "// Two months ahead is inside the submission window on every day of",
+          "// the month, because the deadline for month N+2 is day 10 of N+1.",
+          "pm.collectionVariables.set('validEffectiveDate', firstOfMonthIn(2));",
+          "pm.collectionVariables.set('midMonthDate', firstOfMonthIn(2).replace(/-01$/, '-15'));",
+          "pm.collectionVariables.set('pastDate', firstOfMonthIn(-2));",
+          "",
+          "// Unique PDR per run so idempotency tests do not collide with",
+          "// yesterday's data.",
+          "const millis = String(Date.now());",
+          "pm.collectionVariables.set('uniquePdr', '9' + millis.slice(-13));"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Collection-level assertions applied to every response.",
+          "pm.test('Response is JSON', function () {",
+          "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+          "});",
+          "",
+          "pm.test('Response arrives within the SLO', function () {",
+          "    // 3s is the experience-layer SLO for portal-facing calls. It is",
+          "    // generous because the submit path traverses CRM and SII; the",
+          "    // read paths are asserted more tightly in their own tests.",
+          "    pm.expect(pm.response.responseTime).to.be.below(3000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "validEffectiveDate", "value": "" },
+    { "key": "midMonthDate", "value": "" },
+    { "key": "pastDate", "value": "" },
+    { "key": "uniquePdr", "value": "" },
+    { "key": "seededRequestId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "00 — Auth",
+      "item": [
+        {
+          "name": "Get access token (client credentials)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Token issued', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.access_token).to.be.a('string').and.not.empty;",
+                  "    pm.collectionVariables.set('access_token', body.access_token);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "client_credentials" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "client_secret", "value": "{{client_secret}}" }
+              ]
+            },
+            "url": { "raw": "{{token_url}}", "host": ["{{token_url}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 — Eligibility (read-only, safe for prod smoke)",
+      "item": [
+        {
+          "name": "GET eligibility for a valid PDR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "",
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('Deadline day is 10 (Delibera 77/2018/R/com)', function () {",
+                  "    pm.expect(body.currentWindow.deadlineDay).to.eql(10);",
+                  "});",
+                  "",
+                  "pm.test('Every offered date is the first of a month', function () {",
+                  "    body.availableDates.forEach(d => {",
+                  "        pm.expect(d.effectiveDate, d.effectiveDate).to.match(/-01$/);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Every deadline precedes its effective date', function () {",
+                  "    body.availableDates.forEach(d => {",
+                  "        pm.expect(d.submissionDeadline < d.effectiveDate, JSON.stringify(d)).to.be.true;",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Window flag agrees with today', function () {",
+                  "    // Catches a runtime deployed in the wrong timezone —",
+                  "    // invisible for 29 days a month, decisive on the 10th.",
+                  "    const day = new Date().getUTCDate();",
+                  "    pm.expect(body.currentWindow.openForNextMonth).to.eql(day <= 10);",
+                  "});",
+                  "",
+                  "pm.test('Regulatory basis is cited', function () {",
+                  "    pm.expect(body.regulatoryBasis).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/supply-points/12345678901234/eligibility",
+              "host": ["{{base_url}}"],
+              "path": ["api", "supply-points", "12345678901234", "eligibility"]
+            }
+          }
+        },
+        {
+          "name": "GET eligibility with a malformed PDR → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('Correlation id present', function () {",
+                  "    pm.expect(pm.response.json().error.correlationId).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/supply-points/NOT-A-PDR/eligibility",
+              "host": ["{{base_url}}"],
+              "path": ["api", "supply-points", "NOT-A-PDR", "eligibility"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "20 — Submit (writes — dev/test only)",
+      "item": [
+        {
+          "name": "POST valid residential request → 202",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted, not 200', function () {",
+                  "    // 202 is the contract. The distributor has not ruled yet;",
+                  "    // a 200 would tell the portal the switch succeeded, which",
+                  "    // is the most common defect in SII integrations.",
+                  "    pm.response.to.have.status(202);",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('Response matches the SwitchingAccepted contract', function () {",
+                  "    pm.expect(body).to.have.property('requestId').that.is.a('string').and.not.empty;",
+                  "    pm.expect(body.status).to.eql('SUBMITTED');",
+                  "    pm.expect(body.effectiveDate).to.match(/-01$/);",
+                  "    pm.expect(body).to.have.property('outcomeExpectedBy');",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('seededRequestId', body.requestId);",
+                  "pm.collectionVariables.set('seededPdr', pm.collectionVariables.get('uniquePdr'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-channel", "value": "B2C_PORTAL" },
+              { "key": "x-client-request-id", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pdr\": \"{{uniquePdr}}\",\n  \"customerType\": \"RESIDENTIAL\",\n  \"fiscalCode\": \"RSSMRA80A01H501U\",\n  \"firstName\": \"Mario\",\n  \"lastName\": \"Rossi\",\n  \"effectiveDate\": \"{{validEffectiveDate}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/switching-requests",
+              "host": ["{{base_url}}"],
+              "path": ["api", "switching-requests"]
+            }
+          }
+        },
+        {
+          "name": "POST duplicate request → 200 ALREADY_SUBMITTED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200, not a second submission', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "pm.test('Original request id is returned', function () {",
+                  "    pm.expect(body.status).to.eql('ALREADY_SUBMITTED');",
+                  "    pm.expect(body.requestId).to.eql(pm.collectionVariables.get('seededRequestId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-channel", "value": "B2C_PORTAL" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pdr\": \"{{seededPdr}}\",\n  \"customerType\": \"RESIDENTIAL\",\n  \"fiscalCode\": \"RSSMRA80A01H501U\",\n  \"firstName\": \"Mario\",\n  \"lastName\": \"Rossi\",\n  \"effectiveDate\": \"{{validEffectiveDate}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/switching-requests",
+              "host": ["{{base_url}}"],
+              "path": ["api", "switching-requests"]
+            }
+          }
+        },
+        {
+          "name": "POST mid-month effective date → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422, not 400', function () {",
+                  "    // Well-formed but inadmissible. The portals branch on this:",
+                  "    // a 400 is retried after correction, a 422 is shown to the",
+                  "    // customer as a business outcome.",
+                  "    pm.response.to.have.status(422);",
+                  "});",
+                  "",
+                  "pm.test('Reason is specific enough to render', function () {",
+                  "    const msg = pm.response.json().error.message;",
+                  "    pm.expect(msg).to.not.eql('An unexpected error occurred.');",
+                  "});",
+                  "",
+                  "pm.test('No downstream detail leaks', function () {",
+                  "    const msg = pm.response.json().error.message;",
+                  "    pm.expect(msg).to.not.include('Exception');",
+                  "    pm.expect(msg).to.not.include('.internal');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-channel", "value": "B2C_PORTAL" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pdr\": \"12345678901234\",\n  \"customerType\": \"RESIDENTIAL\",\n  \"fiscalCode\": \"RSSMRA80A01H501U\",\n  \"effectiveDate\": \"{{midMonthDate}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/switching-requests",
+              "host": ["{{base_url}}"],
+              "path": ["api", "switching-requests"]
+            }
+          }
+        },
+        {
+          "name": "POST business customer with codice fiscale → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Not Admissible', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-channel", "value": "B2B_PORTAL" },
+              { "key": "x-operator-id", "value": "AGENT-0042" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pdr\": \"12345678901234\",\n  \"customerType\": \"BUSINESS\",\n  \"fiscalCode\": \"RSSMRA80A01H501U\",\n  \"businessName\": \"Rossi Energia SRL\",\n  \"effectiveDate\": \"{{validEffectiveDate}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/switching-requests",
+              "host": ["{{base_url}}"],
+              "path": ["api", "switching-requests"]
+            }
+          }
+        },
+        {
+          "name": "POST 13-digit PDR → 400 (contract violation)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 from APIkit schema enforcement', function () {",
+                  "    // Asserting 400 specifically, not 400-or-422. Accepting",
+                  "    // either would hide a regression in which RAML validation",
+                  "    // silently stops running and the rule module catches it",
+                  "    // instead — which works until the rule module changes.",
+                  "    pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-channel", "value": "B2C_PORTAL" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pdr\": \"1234567890123\",\n  \"customerType\": \"RESIDENTIAL\",\n  \"fiscalCode\": \"RSSMRA80A01H501U\",\n  \"effectiveDate\": \"{{validEffectiveDate}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/switching-requests",
+              "host": ["{{base_url}}"],
+              "path": ["api", "switching-requests"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "30 — Status",
+      "item": [
+        {
+          "name": "GET status of the seeded request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "",
+                  "const body = pm.response.json();",
+                  "pm.test('Status is one of the canonical values', function () {",
+                  "    pm.expect(['SUBMITTED','UNDER_REVIEW','ACCEPTED','REJECTED','CANCELLED','UNKNOWN'])",
+                  "      .to.include(body.status);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/switching-requests/{{seededRequestId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "switching-requests", "{{seededRequestId}}"]
+            }
+          }
+        },
+        {
+          "name": "GET unknown request id → 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404, not an empty 200', function () {",
+                  "    // An empty 200 is indistinguishable from 'submitted, no",
+                  "    // outcome yet', and the portal would poll forever.",
+                  "    pm.response.to.have.status(404);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/switching-requests/SII-REQ-DOES-NOT-EXIST-0000",
+              "host": ["{{base_url}}"],
+              "path": ["api", "switching-requests", "SII-REQ-DOES-NOT-EXIST-0000"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "40 — Gateway policies",
+      "item": [
+        {
+          "name": "Anonymous request → 401/403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gateway refuses anonymous traffic', function () {",
+                  "    // Doubles as an autodiscovery health check. A 200 here",
+                  "    // means the app deployed but never bound to its API",
+                  "    // Manager instance — it is serving traffic ungoverned,",
+                  "    // and nothing in the logs says so.",
+                  "    pm.expect(pm.response.code, 'If 200, autodiscovery did not bind')",
+                  "      .to.be.oneOf([401, 403]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/supply-points/12345678901234/eligibility",
+              "host": ["{{base_url}}"],
+              "path": ["api", "supply-points", "12345678901234", "eligibility"]
+            }
+          }
+        },
+        {
+          "name": "Malformed bearer token → 401/403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Refused', () => pm.expect(pm.response.code).to.be.oneOf([401, 403]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer not.a.jwt" }],
+            "url": {
+              "raw": "{{base_url}}/api/supply-points/12345678901234/eligibility",
+              "host": ["{{base_url}}"],
+              "path": ["api", "supply-points", "12345678901234", "eligibility"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

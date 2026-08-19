@@ -1,0 +1,156 @@
+name: CI — build and unit test
+
+# =============================================================================
+# Runs on every push and pull request. Fast, hermetic, no deployment.
+#
+# The gate this workflow enforces is MUnit coverage, not merely MUnit passing.
+# In a regulated integration the DataWeave rule modules are what an ARERA
+# resolution changes; a suite that passes while coverage silently erodes is a
+# suite that will not notice the next amendment.
+# =============================================================================
+
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'release/**']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  build:
+    name: Build + MUnit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # -----------------------------------------------------------------
+      # Anypoint Exchange is a private Maven repository. The connectors
+      # this application depends on are not on Maven Central, so without
+      # credentials the build fails at dependency resolution with an
+      # unhelpful 401 rather than anything that names the cause.
+      # -----------------------------------------------------------------
+      - name: Configure Maven settings for Anypoint Exchange
+        uses: whelk-io/maven-settings-xml-action@v22
+        with:
+          repositories: >
+            [
+              {
+                "id": "anypoint-exchange-v3",
+                "url": "https://maven.anypoint.mulesoft.com/api/v3/maven"
+              },
+              {
+                "id": "mulesoft-releases",
+                "url": "https://repository.mulesoft.org/releases/"
+              }
+            ]
+          servers: >
+            [
+              {
+                "id": "anypoint-exchange-v3",
+                "username": "~~~Client~~~",
+                "password": "${{ secrets.ANYPOINT_CONNECTED_APP_CLIENT_ID }}~?~${{ secrets.ANYPOINT_CONNECTED_APP_CLIENT_SECRET }}"
+              }
+            ]
+
+      # -----------------------------------------------------------------
+      # The application builds a TLS context and resolves its secure
+      # properties file at startup — neither is lazy — so it cannot boot,
+      # and therefore cannot run a single MUnit test, until throwaway
+      # keystores exist on the classpath. This generates them.
+      # -----------------------------------------------------------------
+      - name: Generate throwaway keystores and local secrets
+        run: |
+          chmod +x scripts/bootstrap-local-dev.sh
+          ./scripts/bootstrap-local-dev.sh
+
+      - name: Build and run MUnit with coverage gate
+        run: |
+          mvn --batch-mode --no-transfer-progress clean verify \
+            -Dmule.env=local \
+            -Dmule.secure.key=${{ secrets.MULE_SECURE_KEY_LOCAL || 'localdevkey12345' }}
+
+      - name: Publish MUnit results
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'target/surefire-reports/*.xml'
+          check_name: 'MUnit results'
+          fail_on_failure: true
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: munit-coverage
+          path: target/site/munit/coverage/
+          retention-days: 14
+
+      # The artifact built here is the one that gets promoted. Rebuilding
+      # per environment would mean production runs a binary no environment
+      # ever tested.
+      - name: Upload application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mule-application
+          path: target/*-mule-application.jar
+          retention-days: 30
+
+  api-governance:
+    name: API spec lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The RAML is the contract three consumer teams build against. Linting
+      # it in CI catches a breaking change while it is still a pull request,
+      # rather than after the portals have deployed against it.
+      - name: Install linters
+        run: npm install -g @stoplight/spectral-cli raml-cop
+
+      - name: Validate RAML
+        run: raml-cop src/main/resources/api/switching-eapi.raml
+
+  qa-suite-compiles:
+    name: QA automation compiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # The QA suite is not run here — it needs a deployed environment. But
+      # it is compiled, so a broken test suite is caught on the pull request
+      # that broke it rather than at 2am during a deployment.
+      - name: Compile test sources
+        working-directory: qa-automation
+        run: mvn --batch-mode --no-transfer-progress test-compile

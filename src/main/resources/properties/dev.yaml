@@ -1,0 +1,85 @@
+# =====================================================================
+# DEV ENVIRONMENT (CloudHub 2.0, Anypoint "Sandbox" environment)
+# =====================================================================
+# Non-sensitive values only. Secrets live in dev.secure.yaml, which is
+# gitignored and supplied at deploy time by the pipeline (see
+# .github/workflows/cd-deploy.yml).
+#
+# In dev there is no SII accreditation, so sii.host points at the mock
+# service the QA suite stands up. That is deliberate: the regulated
+# counterparty has no sandbox, and pretending otherwise produces tests
+# that cannot run.
+# =====================================================================
+
+http:
+  host: "0.0.0.0"
+  # CloudHub 2.0 routes the public URL to 8081 on the replica.
+  port: "8081"
+
+api:
+  # API Manager instance id for this environment.
+  #
+  # The value below is a placeholder. The pipeline passes the real id as a
+  # CloudHub deployment property (-Dapi.id=...), and deployment properties
+  # take precedence over configuration-properties files at runtime — so the
+  # id never has to be committed, and dev/test/prod cannot cross-bind by
+  # accident.
+  id: "0000-REPLACE-VIA-PIPELINE"
+
+sii:
+  host: "sii-mock-dev.internal"
+  port: "443"
+  timeout:
+    ms: "120000"
+  seller:
+    code: "TEST_OPERATOR"
+  tracciato:
+    version: "1.0"
+  client:
+    cert:
+      alias: "seller-client-cert"
+  path:
+    switching_submit: "/switching/v1/richieste"
+    switching_status: "/switching/v1/richieste/stato"
+  soapaction:
+    switching_submit: "urn:sii:switching:submit"
+
+salesforce:
+  host: "salesforce-mock-dev.internal"
+  timeout:
+    ms: "30000"
+  scope: "api refresh_token"
+  path:
+    contract_by_pdr: "/services/apexrest/contracts"
+    switching_record: "/services/apexrest/switching"
+
+billing:
+  host: "billing-mock-dev.internal"
+  port: "443"
+  timeout:
+    ms: "60000"
+  scope: "billing.write"
+  path:
+    activate_supply: "/billing/v1/supply-points/activate"
+
+oauth:
+  host: "identity-mock-dev.internal"
+  default_scope: "api"
+  client_id: "REPLACE_VIA_PIPELINE"
+  path:
+    token: "/oauth2/token"
+
+mq:
+  url: "https://mq-eu-central-1.anypoint.mulesoft.com/api/v1"
+  client_id: "REPLACE_VIA_PIPELINE"
+  queue:
+    switching_outcome: "switching-outcome-dev"
+    customer_notification: "customer-notification-dev"
+    manual_review: "switching-manual-review-dev"
+
+tls:
+  keystore:
+    path: "keystores/dev-keystore.jks"
+    alias: "dev"
+  truststore:
+    path: "truststores/dev-truststore.jks"

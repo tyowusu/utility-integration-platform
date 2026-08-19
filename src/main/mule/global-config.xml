@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mule xmlns="http://www.mulesoft.org/schema/mule/core"
       xmlns:anypoint-mq="http://www.mulesoft.org/schema/mule/anypoint-mq"
+      xmlns:api-gateway="http://www.mulesoft.org/schema/mule/api-gateway"
       xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
       xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
       xmlns:http="http://www.mulesoft.org/schema/mule/http"
@@ -13,6 +14,7 @@
         http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
         http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
         http://www.mulesoft.org/schema/mule/anypoint-mq http://www.mulesoft.org/schema/mule/anypoint-mq/current/mule-anypoint-mq.xsd
+        http://www.mulesoft.org/schema/mule/api-gateway http://www.mulesoft.org/schema/mule/api-gateway/current/mule-api-gateway.xsd
         http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
         http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd
         http://www.mulesoft.org/schema/mule/tls http://www.mulesoft.org/schema/mule/tls/current/mule-tls.xsd">
@@ -56,6 +58,27 @@
                               key="${mule.secure.key}">
         <secure-properties:encrypt algorithm="AES" mode="CBC" />
     </secure-properties:config>
+
+    <!--
+      ==================== API Manager autodiscovery ====================
+      Binds this running application to its API instance in API Manager.
+      Until this resolves, the app serves traffic ungoverned: no client-id
+      enforcement, no rate limiting, no JWT validation — the policies exist
+      in the control plane but are attached to nothing.
+
+      That failure mode is silent, which is why it is worth testing
+      explicitly rather than assuming. The gateway-policy suite in
+      qa-automation/ asserts that an unauthenticated call is rejected; if
+      autodiscovery has not bound, that test fails and the deployment does
+      not promote.
+
+      apiId differs per environment and is supplied as a deployment
+      property, never committed. flowRef points at the APIkit main flow so
+      policies apply to every routed resource rather than one endpoint.
+    -->
+    <api-gateway:autodiscovery apiId="${api.id}"
+                               doc:name="API Manager autodiscovery"
+                               flowRef="switching-eapi-main" />
 
     <!-- ==================== Inbound: experience APIs ==================== -->
     <http:listener-config name="switching-eapi-listener-config"

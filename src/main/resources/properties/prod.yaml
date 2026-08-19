@@ -1,0 +1,80 @@
+# =====================================================================
+# PRODUCTION ENVIRONMENT (CloudHub 2.0, Anypoint "Production")
+# =====================================================================
+# Real SII endpoints require accreditation with Acquirente Unico and
+# issued client certificates. The hostnames below are placeholders until
+# the Seller's accreditation is in place — replace them from the
+# accreditation pack, do not guess.
+#
+# Timeouts are longer than dev on purpose. SII acknowledgement latency
+# degrades sharply around the 10th of the month, when the following
+# month's switching requests cluster against the regulatory deadline.
+# Tightening the timeout here converts a slow-but-successful submission
+# into a failed one, at exactly the moment a retry is least affordable.
+# =====================================================================
+
+http:
+  host: "0.0.0.0"
+  port: "8081"
+
+api:
+  # Overridden at deploy time with -Dapi.id=... See dev.yaml for why.
+  id: "0000-REPLACE-VIA-PIPELINE"
+
+sii:
+  host: "REPLACE_FROM_ACCREDITATION_PACK"
+  port: "443"
+  timeout:
+    ms: "120000"
+  seller:
+    code: "REPLACE_WITH_SII_OPERATOR_CODE"
+  tracciato:
+    version: "1.0"
+  client:
+    cert:
+      alias: "seller-client-cert"
+  path:
+    switching_submit: "/switching/v1/richieste"
+    switching_status: "/switching/v1/richieste/stato"
+  soapaction:
+    switching_submit: "urn:sii:switching:submit"
+
+salesforce:
+  host: "REPLACE_WITH_SALESFORCE_INSTANCE"
+  timeout:
+    ms: "30000"
+  scope: "api refresh_token"
+  path:
+    contract_by_pdr: "/services/apexrest/contracts"
+    switching_record: "/services/apexrest/switching"
+
+billing:
+  host: "REPLACE_WITH_BILLING_HOST"
+  port: "443"
+  timeout:
+    ms: "60000"
+  scope: "billing.write"
+  path:
+    activate_supply: "/billing/v1/supply-points/activate"
+
+oauth:
+  host: "REPLACE_WITH_IDP_HOST"
+  default_scope: "api"
+  client_id: "REPLACE_VIA_PIPELINE"
+  path:
+    token: "/oauth2/token"
+
+mq:
+  url: "https://mq-eu-central-1.anypoint.mulesoft.com/api/v1"
+  client_id: "REPLACE_VIA_PIPELINE"
+  queue:
+    switching_outcome: "switching-outcome"
+    customer_notification: "customer-notification"
+    manual_review: "switching-manual-review"
+
+tls:
+  keystore:
+    path: "keystores/prod-keystore.jks"
+    alias: "prod"
+  truststore:
+    path: "truststores/prod-truststore.jks"

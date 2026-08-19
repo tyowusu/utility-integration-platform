@@ -19,9 +19,23 @@
     <properties>
         <app.runtime>4.6.0</app.runtime>
         <mule.maven.plugin.version>4.1.1</mule.maven.plugin.version>
+        <munit.version>3.3.2</munit.version>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!--
+          Deployment coordinates. Every one of these is overridden from the
+          CI environment (see .github/workflows/cd-deploy.yml) so that the
+          same artifact is promoted across environments rather than rebuilt.
+        -->
+        <anypoint.uri>https://anypoint.mulesoft.com</anypoint.uri>
+        <ch2.target>Cloudhub-EU-Central-1</ch2.target>
+        <ch2.replicas>1</ch2.replicas>
+        <ch2.vcores>0.1</ch2.vcores>
+        <deploy.env>Sandbox</deploy.env>
+        <deploy.app.name>switching-process-api-dev</deploy.app.name>
+        <mule.env>local</mule.env>
     </properties>
 
     <build>
@@ -33,6 +47,103 @@
                 <extensions>true</extensions>
                 <configuration>
                     <classifier>mule-application</classifier>
+
+                    <!--
+                      CloudHub 2.0 deployment.
+
+                      Authentication is by Connected App (client credentials),
+                      not a username and password. A Connected App can be
+                      scoped to exactly the environments and permissions the
+                      pipeline needs, revoked independently of any person, and
+                      does not break when someone leaves or enables MFA.
+                    -->
+                    <cloudhub2Deployment>
+                        <uri>${anypoint.uri}</uri>
+                        <provider>MC</provider>
+                        <environment>${deploy.env}</environment>
+                        <target>${ch2.target}</target>
+                        <muleVersion>${app.runtime}</muleVersion>
+                        <applicationName>${deploy.app.name}</applicationName>
+                        <connectedAppClientId>${connectedApp.clientId}</connectedAppClientId>
+                        <connectedAppClientSecret>${connectedApp.clientSecret}</connectedAppClientSecret>
+                        <connectedAppGrantType>client_credentials</connectedAppGrantType>
+                        <replicas>${ch2.replicas}</replicas>
+                        <vCores>${ch2.vcores}</vCores>
+
+                        <deploymentSettings>
+                            <generateDefaultPublicUrl>true</generateDefaultPublicUrl>
+                            <!--
+                              Object store persistence is not optional here.
+                              The switching correlation store is what reunites
+                              an asynchronous distributor outcome with the
+                              request that produced it; losing it on replica
+                              restart orphans in-flight switches.
+                            -->
+                            <persistentObjectStore>true</persistentObjectStore>
+                            <updateStrategy>rolling</updateStrategy>
+                            <forwardSslSession>true</forwardSslSession>
+                            <disableAmLogForwarding>false</disableAmLogForwarding>
+                        </deploymentSettings>
+
+                        <integrations>
+                            <services>
+                                <objectStoreV2>
+                                    <enabled>true</enabled>
+                                </objectStoreV2>
+                            </services>
+                        </integrations>
+
+                        <properties>
+                            <mule.env>${mule.env}</mule.env>
+                            <anypoint.platform.client_id>${autodiscovery.clientId}</anypoint.platform.client_id>
+                        </properties>
+
+                        <secureProperties>
+                            <mule.secure.key>${mule.secure.key}</mule.secure.key>
+                            <anypoint.platform.client_secret>${autodiscovery.clientSecret}</anypoint.platform.client_secret>
+                        </secureProperties>
+                    </cloudhub2Deployment>
+                </configuration>
+            </plugin>
+
+            <!--
+              MUnit. Coverage is enforced, not merely reported: a build that
+              drops below the threshold fails. In a regulated integration the
+              DataWeave rule modules are the thing an ARERA resolution
+              changes, so they are the thing that must stay covered.
+            -->
+            <plugin>
+                <groupId>com.mulesoft.munit.tools</groupId>
+                <artifactId>munit-maven-plugin</artifactId>
+                <version>${munit.version}</version>
+                <executions>
+                    <execution>
+                        <id>test</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>test</goal>
+                            <goal>coverage-report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <runtimeConfiguration>
+                        <discoverRuntimes>
+                            <product>EE</product>
+                        </discoverRuntimes>
+                    </runtimeConfiguration>
+                    <coverage>
+                        <runCoverage>true</runCoverage>
+                        <failBuild>true</failBuild>
+                        <requiredApplicationCoverage>70</requiredApplicationCoverage>
+                        <requiredResourceCoverage>70</requiredResourceCoverage>
+                        <requiredFlowCoverage>70</requiredFlowCoverage>
+                        <formats>
+                            <format>console</format>
+                            <format>html</format>
+                            <format>json</format>
+                        </formats>
+                    </coverage>
                 </configuration>
             </plugin>
         </plugins>
@@ -75,7 +186,81 @@
             <version>1.2.2</version>
             <classifier>mule-plugin</classifier>
         </dependency>
+
+        <!--
+          API Manager autodiscovery. Registers the deployed application with
+          the API instance in API Manager so gateway policies (client-id
+          enforcement, rate limiting, JWT validation) are applied to it.
+          Without this the app runs but is not governed.
+        -->
+        <dependency>
+            <groupId>com.mulesoft.mule.runtime.modules</groupId>
+            <artifactId>mule-api-gateway-module</artifactId>
+            <version>2.3.1</version>
+            <classifier>mule-plugin</classifier>
+        </dependency>
+
+        <!-- ==================== Test scope ==================== -->
+        <dependency>
+            <groupId>com.mulesoft.munit</groupId>
+            <artifactId>munit-runner</artifactId>
+            <version>${munit.version}</version>
+            <classifier>mule-plugin</classifier>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.mulesoft.munit</groupId>
+            <artifactId>munit-tools</artifactId>
+            <version>${munit.version}</version>
+            <classifier>mule-plugin</classifier>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
+
+    <!--
+      ==================== Deployment profiles ====================
+      One profile per environment. The artifact is built once, in the CI
+      profile, and the same binary is promoted; profiles only vary the
+      deployment target and the runtime property set.
+    -->
+    <profiles>
+        <profile>
+            <id>dev</id>
+            <properties>
+                <deploy.env>Sandbox</deploy.env>
+                <deploy.app.name>switching-process-api-dev</deploy.app.name>
+                <mule.env>dev</mule.env>
+                <ch2.replicas>1</ch2.replicas>
+                <ch2.vcores>0.1</ch2.vcores>
+            </properties>
+        </profile>
+        <profile>
+            <id>test</id>
+            <properties>
+                <deploy.env>Sandbox</deploy.env>
+                <deploy.app.name>switching-process-api-test</deploy.app.name>
+                <mule.env>test</mule.env>
+                <ch2.replicas>1</ch2.replicas>
+                <ch2.vcores>0.2</ch2.vcores>
+            </properties>
+        </profile>
+        <profile>
+            <id>prod</id>
+            <properties>
+                <deploy.env>Production</deploy.env>
+                <deploy.app.name>switching-process-api</deploy.app.name>
+                <mule.env>prod</mule.env>
+                <!--
+                  Two replicas minimum in production. The 10th of the month is
+                  a hard regulatory deadline for the following month's
+                  switches; a single-replica restart during that window loses
+                  submissions that cannot simply be retried tomorrow.
+                -->
+                <ch2.replicas>2</ch2.replicas>
+                <ch2.vcores>0.5</ch2.vcores>
+            </properties>
+        </profile>
+    </profiles>
 
     <repositories>
         <repository>
@@ -97,5 +282,19 @@
             <url>https://repository.mulesoft.org/releases/</url>
         </pluginRepository>
     </pluginRepositories>
+
+    <!--
+      Publishing target for `mvn deploy`. Pushes the built application to
+      Exchange so that a release is an immutable, versioned artifact rather
+      than whatever happened to be on a laptop.
+    -->
+    <distributionManagement>
+        <repository>
+            <id>anypoint-exchange-v3</id>
+            <name>Anypoint Exchange</name>
+            <url>https://maven.anypoint.mulesoft.com/api/v3/organizations/${anypoint.orgId}/maven</url>
+            <layout>default</layout>
+        </repository>
+    </distributionManagement>
 
 </project>

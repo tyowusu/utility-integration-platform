@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>io.github.portfolio.qa</groupId>
+    <artifactId>switching-api-qa-automation</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>switching-api-qa-automation</name>
+    <description>
+        Black-box API test automation for the Switching Experience API and the
+        API Manager gateway layer in front of it.
+    </description>
+
+    <!--
+      ==========================================================================
+      WHY THIS IS A SEPARATE MAVEN PROJECT
+      ==========================================================================
+      MUnit tests the Mule application from the inside: it mocks SII and
+      Salesforce and asserts on flow behaviour. It cannot see the gateway.
+      Policies — client-id enforcement, rate limiting, JWT validation — are
+      applied by API Manager in front of the application, so from MUnit's
+      vantage point they do not exist.
+
+      Everything here runs against a *deployed* URL over the wire, through the
+      gateway, exactly as a portal would. That is the only position from which
+      "is rate limiting actually switched on in test?" is answerable.
+
+      It is deliberately not a Mule module: it must be runnable against any
+      environment by URL, including one deployed from a different commit.
+      ==========================================================================
+    -->
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <karate.version>1.5.2</karate.version>
+        <rest-assured.version>5.5.1</rest-assured.version>
+        <junit.version>5.11.4</junit.version>
+        <surefire.version>3.5.2</surefire.version>
+        <failsafe.version>3.5.2</failsafe.version>
+        <jmeter.plugin.version>3.8.0</jmeter.plugin.version>
+
+        <!--
+          Target under test. Overridden per environment on the command line:
+            mvn test -Dapi.base.url=https://switching-process-api-test.....cloudhub.io
+          Defaults to a local Mule runtime so a developer can run the suite
+          against Anypoint Studio without any flags.
+        -->
+        <api.base.url>https://localhost:8082</api.base.url>
+        <api.base.path>/api</api.base.path>
+        <karate.env>local</karate.env>
+        <access.token></access.token>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- ==================== Karate ==================== -->
+        <!--
+          Karate carries the scenario-level suites: multi-step journeys,
+          data-driven regression tables, and the standalone mock server that
+          stands in for SII. Its readable feature files are the artefact a
+          business analyst can review against the ARERA rules, which matters
+          when the acceptance criteria are a published resolution.
+        -->
+        <dependency>
+            <groupId>io.karatelabs</groupId>
+            <artifactId>karate-junit5</artifactId>
+            <version>${karate.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ==================== REST Assured ==================== -->
+        <!--
+          REST Assured carries the assertions that need real Java: JWT
+          construction and tampering, JSON-schema conformance, concurrency for
+          rate-limit proving. Karate can do most of this; Java does it with a
+          debugger attached.
+        -->
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <version>${rest-assured.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <version>${rest-assured.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.hamcrest</groupId>
+            <artifactId>hamcrest</artifactId>
+            <version>3.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JWT minting, for authorization negative tests. -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+            <version>9.47</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <testResources>
+            <testResource>
+                <directory>src/test/resources</directory>
+                <filtering>false</filtering>
+            </testResource>
+            <!-- Feature files sit next to their runners so Karate finds them by convention. -->
+            <testResource>
+                <directory>src/test/java</directory>
+                <excludes>
+                    <exclude>**/*.java</exclude>
+                </excludes>
+            </testResource>
+        </testResources>
+
+        <plugins>
+            <!--
+              Surefire runs the functional suites (fast, deterministic).
+              Failsafe runs *IT-suffixed integration suites (slower, require a
+              live deployment). Splitting them means a developer can run
+              `mvn test` on a laptop without a deployed environment, while CI
+              runs `mvn verify` after deploying.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${surefire.version}</version>
+                <configuration>
+                    <argLine>-Dfile.encoding=UTF-8</argLine>
+                    <systemPropertyVariables>
+                        <api.base.url>${api.base.url}</api.base.url>
+                        <api.base.path>${api.base.path}</api.base.path>
+                        <karate.env>${karate.env}</karate.env>
+                    </systemPropertyVariables>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>${failsafe.version}</version>
+                <configuration>
+                    <systemPropertyVariables>
+                        <api.base.url>${api.base.url}</api.base.url>
+                        <api.base.path>${api.base.path}</api.base.path>
+                        <karate.env>${karate.env}</karate.env>
+                    </systemPropertyVariables>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+              JMeter. Bound to a profile rather than the default lifecycle:
+              a performance run takes minutes and must not sit in the path of
+              a pull-request build.
+            -->
+            <plugin>
+                <groupId>com.lazerycode.jmeter</groupId>
+                <artifactId>jmeter-maven-plugin</artifactId>
+                <version>${jmeter.plugin.version}</version>
+                <configuration>
+                    <testFilesDirectory>${project.basedir}/jmeter</testFilesDirectory>
+                    <resultsDirectory>${project.build.directory}/jmeter/results</resultsDirectory>
+                    <generateReports>true</generateReports>
+                    <testResultsTimestamp>false</testResultsTimestamp>
+                    <propertiesUser>
+                        <base.url>${api.base.url}</base.url>
+                        <!-- Read by the plan as ${__P(access.token,)}. Empty
+                             by default so a local run without credentials
+                             still executes and fails on assertions rather
+                             than on an unresolved property. -->
+                        <access.token>${access.token}</access.token>
+                    </propertiesUser>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+          Performance profile. `mvn verify -Pperf` runs the JMeter plans and
+          fails the build if the SLA assertions in the plan are breached.
+        -->
+        <profile>
+            <id>perf</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.lazerycode.jmeter</groupId>
+                        <artifactId>jmeter-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>configuration</id>
+                                <goals>
+                                    <goal>configure</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>jmeter-tests</id>
+                                <goals>
+                                    <goal>jmeter</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>jmeter-check-results</id>
+                                <goals>
+                                    <goal>results</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+</project>

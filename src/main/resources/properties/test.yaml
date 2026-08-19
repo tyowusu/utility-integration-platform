@@ -1,0 +1,74 @@
+# =====================================================================
+# TEST / QA ENVIRONMENT (CloudHub 2.0)
+# =====================================================================
+# This is the environment the automated regression, performance and
+# gateway-policy suites run against. It is the only environment where
+# rate-limit policies are deliberately breached by tests, so its policy
+# thresholds are set low enough to be provable within a CI run.
+# =====================================================================
+
+http:
+  host: "0.0.0.0"
+  port: "8081"
+
+api:
+  # Overridden at deploy time with -Dapi.id=... See dev.yaml for why.
+  id: "0000-REPLACE-VIA-PIPELINE"
+
+sii:
+  host: "sii-mock-test.internal"
+  port: "443"
+  timeout:
+    ms: "120000"
+  seller:
+    code: "TEST_OPERATOR"
+  tracciato:
+    version: "1.0"
+  client:
+    cert:
+      alias: "seller-client-cert"
+  path:
+    switching_submit: "/switching/v1/richieste"
+    switching_status: "/switching/v1/richieste/stato"
+  soapaction:
+    switching_submit: "urn:sii:switching:submit"
+
+salesforce:
+  host: "salesforce-mock-test.internal"
+  timeout:
+    ms: "30000"
+  scope: "api refresh_token"
+  path:
+    contract_by_pdr: "/services/apexrest/contracts"
+    switching_record: "/services/apexrest/switching"
+
+billing:
+  host: "billing-mock-test.internal"
+  port: "443"
+  timeout:
+    ms: "60000"
+  scope: "billing.write"
+  path:
+    activate_supply: "/billing/v1/supply-points/activate"
+
+oauth:
+  host: "identity-mock-test.internal"
+  default_scope: "api"
+  client_id: "REPLACE_VIA_PIPELINE"
+  path:
+    token: "/oauth2/token"
+
+mq:
+  url: "https://mq-eu-central-1.anypoint.mulesoft.com/api/v1"
+  client_id: "REPLACE_VIA_PIPELINE"
+  queue:
+    switching_outcome: "switching-outcome-test"
+    customer_notification: "customer-notification-test"
+    manual_review: "switching-manual-review-test"
+
+tls:
+  keystore:
+    path: "keystores/test-keystore.jks"
+    alias: "test"
+  truststore:
+    path: "truststores/test-truststore.jks"

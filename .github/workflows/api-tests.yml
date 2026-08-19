@@ -1,0 +1,276 @@
+name: API test suite
+
+# =============================================================================
+# REUSABLE WORKFLOW — runs the black-box QA suite against a deployed API.
+#
+# Called by cd-deploy.yml after each deployment, and callable on demand to
+# test an environment without redeploying it.
+#
+# The three toggles exist because the suite is not uniformly safe:
+#
+#   run_writes           — transmits real switching requests to SII. Never
+#                          against production.
+#   run_gateway_policies — probes the gateway with anonymous and forged
+#                          credentials. Safe everywhere, and the anonymous
+#                          probe doubles as an autodiscovery health check.
+#   run_performance      — JMeter peak-day profile. Minutes long, and it
+#                          deliberately breaches rate limits, so it belongs
+#                          in test only.
+# =============================================================================
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      run_writes:
+        required: false
+        type: boolean
+        default: false
+      run_gateway_policies:
+        required: false
+        type: boolean
+        default: true
+      run_performance:
+        required: false
+        type: boolean
+        default: false
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to test'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [dev, test, prod]
+      run_writes:
+        description: 'Include write scenarios (never for prod)'
+        required: false
+        type: boolean
+        default: false
+      run_gateway_policies:
+        required: false
+        type: boolean
+        default: true
+      run_performance:
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  resolve:
+    name: Resolve target
+    runs-on: ubuntu-latest
+    outputs:
+      base_url: ${{ steps.env.outputs.base_url }}
+      token_url: ${{ steps.env.outputs.token_url }}
+    steps:
+      - id: env
+        run: |
+          case "${{ inputs.environment }}" in
+            dev)  echo "base_url=${{ secrets.API_BASE_URL_DEV }}"  >> "$GITHUB_OUTPUT"
+                  echo "token_url=${{ secrets.TOKEN_URL_DEV }}"    >> "$GITHUB_OUTPUT" ;;
+            test) echo "base_url=${{ secrets.API_BASE_URL_TEST }}" >> "$GITHUB_OUTPUT"
+                  echo "token_url=${{ secrets.TOKEN_URL_TEST }}"   >> "$GITHUB_OUTPUT" ;;
+            prod) echo "base_url=${{ secrets.API_BASE_URL_PROD }}" >> "$GITHUB_OUTPUT"
+                  echo "token_url=${{ secrets.TOKEN_URL_PROD }}"   >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      # A belt-and-braces guard. run_writes is already false for prod in the
+      # calling workflow, but a manual dispatch could set it, and the cost of
+      # that mistake is a real regulated transmission that cannot be recalled.
+      - name: Refuse writes against production
+        if: inputs.environment == 'prod' && inputs.run_writes
+        run: |
+          echo "::error::Write scenarios transmit genuine switching requests to the SII"
+          echo "::error::under the Seller's operator code. They are never run against production."
+          exit 1
+
+  functional:
+    name: Karate + REST Assured
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # A single token for the whole run. Fetching per scenario would make
+      # the suite's own traffic the dominant load on the identity provider
+      # and would distort the rate-limit assertions downstream.
+      - name: Obtain access token
+        id: token
+        run: |
+          TOKEN=$(curl -sk -X POST "${{ needs.resolve.outputs.token_url }}" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=${{ secrets.API_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Read-only functional suite
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress test \
+            -Dtest=SwitchingFunctionalTest#smoke \
+            -Dkarate.env=${{ inputs.environment }} \
+            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
+            -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
+            -Dclient.id=${{ secrets.API_CLIENT_ID }} \
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }}
+
+      - name: Full functional suite (writes)
+        if: inputs.run_writes
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress test \
+            -Dtest=SwitchingFunctionalTest#functional \
+            -Dkarate.env=${{ inputs.environment }} \
+            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
+            -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
+            -Dclient.id=${{ secrets.API_CLIENT_ID }} \
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }}
+
+      - name: Gateway policy suite
+        if: inputs.run_gateway_policies
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress test \
+            -Dtest=SwitchingFunctionalTest#gateway \
+            -Dkarate.env=${{ inputs.environment }} \
+            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
+            -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
+            -Dclient.id=${{ secrets.API_CLIENT_ID }} \
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
+            -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
+            -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
+
+      - name: Contract and security integration tests
+        if: inputs.run_writes
+        working-directory: qa-automation
+        # Failsafe goals invoked directly rather than via `verify`, so the
+        # Karate suites above are not re-run as a side effect of the lifecycle.
+        run: |
+          mvn --batch-mode --no-transfer-progress \
+            test-compile failsafe:integration-test failsafe:verify \
+            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
+            -Daccess.token=${{ steps.token.outputs.token }}
+
+      - name: Publish results
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'qa-automation/target/surefire-reports/*.xml,qa-automation/target/failsafe-reports/*.xml'
+          check_name: 'API tests — ${{ inputs.environment }}'
+          fail_on_failure: true
+
+      - name: Upload Karate HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: karate-report-${{ inputs.environment }}
+          path: qa-automation/target/karate-reports/
+          retention-days: 14
+
+  postman:
+    name: Newman collection
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm install -g newman newman-reporter-htmlextra
+
+      # Folder selection, not a separate collection. One collection with
+      # ordered folders stays in step with itself; two collections drift.
+      - name: Run collection
+        working-directory: qa-automation/postman
+        run: |
+          FOLDERS="--folder '00 — Auth' --folder '10 — Eligibility' --folder '40 — Gateway policies'"
+          if [ "${{ inputs.run_writes }}" = "true" ]; then
+            FOLDERS="$FOLDERS --folder '20 — Submit' --folder '30 — Status'"
+          fi
+
+          eval newman run switching-api.postman_collection.json \
+            -e env.${{ inputs.environment }}.postman_environment.json \
+            --env-var "base_url=${{ needs.resolve.outputs.base_url }}" \
+            --env-var "token_url=${{ needs.resolve.outputs.token_url }}" \
+            --env-var "client_id=${{ secrets.API_CLIENT_ID }}" \
+            --env-var "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            $FOLDERS \
+            --insecure \
+            --reporters cli,junit,htmlextra \
+            --reporter-junit-export ../../newman-results.xml \
+            --reporter-htmlextra-export ../../newman-report.html
+
+      - name: Publish Newman results
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'newman-results.xml'
+          check_name: 'Newman — ${{ inputs.environment }}'
+          fail_on_failure: true
+
+  performance:
+    name: JMeter peak-day profile
+    needs: resolve
+    if: inputs.run_performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Obtain access token
+        id: token
+        run: |
+          TOKEN=$(curl -sk -X POST "${{ needs.resolve.outputs.token_url }}" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=${{ secrets.API_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      # A hosted runner is not a load generator. These numbers are a
+      # regression signal — "the p95 moved 40% against last week" — not a
+      # capacity statement. Sizing for the actual 10th-of-the-month peak
+      # needs distributed load from an environment that resembles the
+      # callers, and that is a separate exercise from this gate.
+      - name: Run peak-day profile
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress verify -Pperf -DskipTests \
+            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
+            -Daccess.token=${{ steps.token.outputs.token }}
+
+      - name: Upload JMeter report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jmeter-report-${{ inputs.environment }}
+          path: |
+            qa-automation/target/jmeter/results/
+            qa-automation/target/jmeter/reports/
+          retention-days: 30

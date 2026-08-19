@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <!--
+      ====================================================================
+      MUNIT — ELIGIBILITY PRE-FLIGHT
+      ====================================================================
+      The eligibility endpoint exists so a portal can grey out unavailable
+      dates before the customer commits. Its correctness is therefore a
+      conversion concern as much as a compliance one: if it offers a date
+      the submit endpoint will refuse, the customer completes a form and is
+      then rejected — the worst possible ordering.
+
+      The invariant these tests protect: every date the eligibility
+      endpoint marks available must be a date the validation module would
+      accept. The two implementations must not drift apart.
+      ====================================================================
+    -->
+
+    <munit:config name="switching-eligibility-test-suite.xml" />
+
+    <munit:test name="eligibility-returns-only-first-of-month-dates"
+                description="Every offered effective date is the first day of a month.">
+
+        <munit:execution>
+            <munit:set-event doc:name="Eligibility request">
+                <munit:payload value="#[{}]" />
+                <munit:variables>
+                    <munit:variable key="pdr" value="12345678901234" />
+                    <munit:variable key="requestedEffectiveDate" value="#[null]" />
+                </munit:variables>
+            </munit:set-event>
+
+            <flow-ref name="process-check-eligibility" doc:name="Check eligibility" />
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that doc:name="PDR is echoed"
+                                     expression="#[payload.pdr]"
+                                     is="#[MunitTools::equalTo('12345678901234')]" />
+
+            <munit-tools:assert-that doc:name="Earliest available date is present"
+                                     expression="#[payload.earliestAvailableEffectiveDate]"
+                                     is="#[MunitTools::notNullValue()]" />
+
+            <munit-tools:assert-that doc:name="At least one date is offered"
+                                     expression="#[sizeOf(payload.availableDates default [])]"
+                                     is="#[MunitTools::greaterThan(0)]" />
+
+            <munit-tools:assert-that doc:name="Every offered date is the 1st of a month"
+                                     expression="#[%dw 2.0
+                                        output application/java
+                                        ---
+                                        (payload.availableDates default [])
+                                            every ((d) -> ((d.effectiveDate as Date) as String {format: 'd'}) == '1')]"
+                                     is="#[MunitTools::equalTo(true)]"
+                                     message="Delibera 77/2018/R/com permits only first-of-month effective dates. Offering any other date guarantees a downstream rejection." />
+
+            <munit-tools:assert-that doc:name="Every offered date is in the future"
+                                     expression="#[%dw 2.0
+                                        output application/java
+                                        ---
+                                        (payload.availableDates default [])
+                                            every ((d) -> (d.effectiveDate as Date) > (now() as Date))]"
+                                     is="#[MunitTools::equalTo(true)]" />
+
+            <munit-tools:assert-that doc:name="Regulatory basis is cited"
+                                     expression="#[payload.regulatoryBasis]"
+                                     is="#[MunitTools::notNullValue()]"
+                                     message="The response cites the resolution it derives from, so an auditor can trace an offered date back to its legal basis without reading the code." />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="eligibility-window-deadline-is-day-ten"
+                description="The submission deadline reported to callers is day 10 of the preceding month.">
+
+        <munit:execution>
+            <munit:set-event doc:name="Eligibility request">
+                <munit:payload value="#[{}]" />
+                <munit:variables>
+                    <munit:variable key="pdr" value="99999999999999" />
+                    <munit:variable key="requestedEffectiveDate" value="#[null]" />
+                </munit:variables>
+            </munit:set-event>
+
+            <flow-ref name="process-check-eligibility" doc:name="Check eligibility" />
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that doc:name="Deadline day is 10"
+                                     expression="#[payload.currentWindow.deadlineDay]"
+                                     is="#[MunitTools::equalTo(10)]" />
+
+            <munit-tools:assert-that doc:name="Each deadline precedes its effective date"
+                                     expression="#[%dw 2.0
+                                        output application/java
+                                        ---
+                                        (payload.availableDates default [])
+                                            every ((d) -> (d.submissionDeadline as Date) &lt; (d.effectiveDate as Date))]"
+                                     is="#[MunitTools::equalTo(true)]" />
+        </munit:validation>
+    </munit:test>
+
+</mule>

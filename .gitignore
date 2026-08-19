@@ -16,6 +16,17 @@ target/
 *.jar
 *.zip
 
+# --- Test output ----------------------------------------------------------
+qa-automation/target/
+newman-results.xml
+newman-report.html
+**/karate-reports/
+**/jmeter/results/
+**/jmeter/reports/
+.soapui/
+soapui-*.log
+*-out.xml
+
 # --- Anypoint Studio / Eclipse -------------------------------------------
 .mule/
 .studio/

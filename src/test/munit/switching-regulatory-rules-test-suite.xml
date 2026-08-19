@@ -1,0 +1,346 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+        http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <!--
+      ====================================================================
+      MUNIT — REGULATORY ADMISSIBILITY RULES
+      ====================================================================
+      These are the highest-value tests in the repository.
+
+      The ARERA switching calendar (Delibera 77/2018/R/com) is the part of
+      this platform most likely to change and most expensive to get wrong:
+      a request wrongly accepted is rejected by SII and counts against the
+      Seller in commercial-quality reporting; a request wrongly rejected is
+      a lost customer.
+
+      Every date below is computed relative to now() rather than hardcoded.
+      A suite with a literal "2025-09-01" in it passes in August and fails
+      forever afterwards — a fixture that expires is worse than no fixture,
+      because it trains the team to ignore a red build.
+      ====================================================================
+    -->
+
+    <munit:config name="switching-regulatory-rules-test-suite.xml" />
+
+    <!--
+      Shared fixture. Two months ahead, first of the month: always inside
+      the submission window regardless of today's date, because the
+      deadline for month N+2 is day 10 of month N+1, which has not yet
+      arrived on any day of month N.
+    -->
+    <munit:dynamic-port propertyName="munit.dynamic.port" />
+
+    <!-- ================================================================
+         ACCEPTANCE PATH
+         ================================================================ -->
+    <munit:test name="submit-valid-residential-request-returns-202"
+                description="A well-formed residential request inside the submission window is accepted and correlated.">
+
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Salesforce contract lookup" processor="flow-ref">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="name"
+                                                whereValue="system-salesforce-get-contract" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { Id: 'a0X1t000001abcd', AccountId: '0011t000002efgh' }]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <!--
+              No in-flight request for this PDR. Mocking the object store
+              rather than pre-seeding it keeps the test independent of
+              execution order; a suite that depends on store state is a
+              suite that fails only when run in parallel.
+            -->
+            <munit-tools:mock-when doc:name="Mock: no duplicate in flight" processor="os:retrieve">
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[null]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock SII submission" processor="flow-ref">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="name"
+                                                whereValue="system-sii-submit-switching" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { esito: { codiceRichiesta: 'SII-REQ-0001', esitoCode: 'OK' } }]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock correlation store write" processor="os:store" />
+
+            <munit-tools:mock-when doc:name="Mock Salesforce submission record" processor="flow-ref">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="name"
+                                                whereValue="system-salesforce-record-submission" />
+                </munit-tools:with-attributes>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Valid residential request">
+                <munit:payload value="#[%dw 2.0
+                    output application/json
+                    var twoMonthsAhead = (((now() as Date) + |P2M|) as String {format: 'yyyy-MM'}) ++ '-01'
+                    ---
+                    {
+                        pdr: '12345678901234',
+                        customerType: 'RESIDENTIAL',
+                        fiscalCode: 'RSSMRA80A01H501U',
+                        firstName: 'Mario',
+                        lastName: 'Rossi',
+                        effectiveDate: twoMonthsAhead
+                    }]" mediaType="application/json" />
+                <munit:variables>
+                    <munit:variable key="channel" value="B2C_PORTAL" />
+                    <munit:variable key="operatorId" value="SYSTEM" />
+                    <munit:variable key="clientRequestId" value="test-client-req-1" />
+                </munit:variables>
+            </munit:set-event>
+
+            <flow-ref name="process-submit-switching-request" doc:name="Submit" />
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that doc:name="Status is 202 Accepted"
+                                     expression="#[vars.httpStatus]"
+                                     is="#[MunitTools::equalTo(202)]"
+                                     message="A request inside the submission window must be accepted with 202, not 200 — the outcome is asynchronous." />
+
+            <munit-tools:assert-that doc:name="SII request id is echoed"
+                                     expression="#[payload.requestId]"
+                                     is="#[MunitTools::equalTo('SII-REQ-0001')]"
+                                     message="The caller must receive the SII request id; without it the asynchronous outcome cannot be reconciled by the portal." />
+
+            <munit-tools:assert-that doc:name="Status is SUBMITTED"
+                                     expression="#[payload.status]"
+                                     is="#[MunitTools::equalTo('SUBMITTED')]" />
+
+            <munit-tools:assert-that doc:name="Outcome expectation is communicated"
+                                     expression="#[payload.outcomeExpectedBy]"
+                                     is="#[MunitTools::notNullValue()]"
+                                     message="outcomeExpectedBy drives the portal's customer messaging and materially reduces 'where is my switch?' contact volume." />
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         REGULATORY REJECTIONS
+         ================================================================ -->
+    <munit:test name="effective-date-not-first-of-month-is-rejected"
+                description="Delibera 77/2018/R/com requires the effective date to be the first day of a month."
+                expectedErrorType="SWITCHING:NOT_ADMISSIBLE">
+
+        <munit:execution>
+            <munit:set-event doc:name="Mid-month effective date">
+                <munit:payload value="#[%dw 2.0
+                    output application/json
+                    var twoMonthsAhead = (((now() as Date) + |P2M|) as String {format: 'yyyy-MM'}) ++ '-15'
+                    ---
+                    {
+                        pdr: '12345678901234',
+                        customerType: 'RESIDENTIAL',
+                        fiscalCode: 'RSSMRA80A01H501U',
+                        effectiveDate: twoMonthsAhead
+                    }]" mediaType="application/json" />
+                <munit:variables>
+                    <munit:variable key="channel" value="B2C_PORTAL" />
+                    <munit:variable key="operatorId" value="SYSTEM" />
+                    <munit:variable key="clientRequestId" value="test-client-req-2" />
+                </munit:variables>
+            </munit:set-event>
+
+            <flow-ref name="process-submit-switching-request" doc:name="Submit" />
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="closed-submission-window-is-rejected"
+                description="A request for next month's first day, submitted after the 10th, is outside the window."
+                expectedErrorType="SWITCHING:NOT_ADMISSIBLE"
+                ignore="#[(now() as String {format: 'd'}) as Number &lt;= 10]">
+
+        <!--
+          Conditionally ignored. On or before the 10th, next month's first
+          day is still legitimately available, so the scenario this test
+          describes does not exist on those dates. Skipping is honest;
+          rewriting the assertion to pass on every date would test nothing.
+        -->
+        <munit:execution>
+            <munit:set-event doc:name="Next month, window closed">
+                <munit:payload value="#[%dw 2.0
+                    output application/json
+                    var nextMonth = (((now() as Date) + |P1M|) as String {format: 'yyyy-MM'}) ++ '-01'
+                    ---
+                    {
+                        pdr: '12345678901234',
+                        customerType: 'RESIDENTIAL',
+                        fiscalCode: 'RSSMRA80A01H501U',
+                        effectiveDate: nextMonth
+                    }]" mediaType="application/json" />
+                <munit:variables>
+                    <munit:variable key="channel" value="B2C_PORTAL" />
+                    <munit:variable key="operatorId" value="SYSTEM" />
+                    <munit:variable key="clientRequestId" value="test-client-req-3" />
+                </munit:variables>
+            </munit:set-event>
+
+            <flow-ref name="process-submit-switching-request" doc:name="Submit" />
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="malformed-pdr-is-rejected"
+                description="PDR must be exactly 14 numeric digits."
+                expectedErrorType="SWITCHING:NOT_ADMISSIBLE">
+
+        <munit:execution>
+            <munit:set-event doc:name="13-digit PDR">
+                <munit:payload value="#[%dw 2.0
+                    output application/json
+                    var twoMonthsAhead = (((now() as Date) + |P2M|) as String {format: 'yyyy-MM'}) ++ '-01'
+                    ---
+                    {
+                        pdr: '1234567890123',
+                        customerType: 'RESIDENTIAL',
+                        fiscalCode: 'RSSMRA80A01H501U',
+                        effectiveDate: twoMonthsAhead
+                    }]" mediaType="application/json" />
+                <munit:variables>
+                    <munit:variable key="channel" value="B2C_PORTAL" />
+                    <munit:variable key="operatorId" value="SYSTEM" />
+                    <munit:variable key="clientRequestId" value="test-client-req-4" />
+                </munit:variables>
+            </munit:set-event>
+
+            <flow-ref name="process-submit-switching-request" doc:name="Submit" />
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="business-customer-with-codice-fiscale-is-rejected"
+                description="A BUSINESS customer must present an 11-digit partita IVA, not a 16-character codice fiscale."
+                expectedErrorType="SWITCHING:NOT_ADMISSIBLE">
+
+        <!--
+          This is the edge case that leaks through hand testing. The payload
+          is structurally perfect and the date is valid; only the identifier
+          class is wrong for the declared customer type. SII rejects it, and
+          the rejection lands in the Seller's statistics.
+        -->
+        <munit:execution>
+            <munit:set-event doc:name="BUSINESS with codice fiscale">
+                <munit:payload value="#[%dw 2.0
+                    output application/json
+                    var twoMonthsAhead = (((now() as Date) + |P2M|) as String {format: 'yyyy-MM'}) ++ '-01'
+                    ---
+                    {
+                        pdr: '12345678901234',
+                        customerType: 'BUSINESS',
+                        fiscalCode: 'RSSMRA80A01H501U',
+                        businessName: 'Rossi SRL',
+                        effectiveDate: twoMonthsAhead
+                    }]" mediaType="application/json" />
+                <munit:variables>
+                    <munit:variable key="channel" value="B2B_PORTAL" />
+                    <munit:variable key="operatorId" value="AGENT-77" />
+                    <munit:variable key="clientRequestId" value="test-client-req-5" />
+                </munit:variables>
+            </munit:set-event>
+
+            <flow-ref name="process-submit-switching-request" doc:name="Submit" />
+        </munit:execution>
+    </munit:test>
+
+    <!-- ================================================================
+         IDEMPOTENCY
+         ================================================================ -->
+    <munit:test name="duplicate-request-returns-200-not-a-second-sii-submission"
+                description="A repeat submission for the same PDR and effective date must not reach SII twice.">
+
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Salesforce contract lookup" processor="flow-ref">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="name"
+                                                whereValue="system-salesforce-get-contract" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { Id: 'a0X1t000001abcd', AccountId: '0011t000002efgh' }]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock: request already in flight" processor="os:retrieve">
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { requestId: 'SII-REQ-EXISTING', pdr: '12345678901234' }]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock SII submission (must not be called)" processor="flow-ref">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="name"
+                                                whereValue="system-sii-submit-switching" />
+                </munit-tools:with-attributes>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Repeat submission">
+                <munit:payload value="#[%dw 2.0
+                    output application/json
+                    var twoMonthsAhead = (((now() as Date) + |P2M|) as String {format: 'yyyy-MM'}) ++ '-01'
+                    ---
+                    {
+                        pdr: '12345678901234',
+                        customerType: 'RESIDENTIAL',
+                        fiscalCode: 'RSSMRA80A01H501U',
+                        effectiveDate: twoMonthsAhead
+                    }]" mediaType="application/json" />
+                <munit:variables>
+                    <munit:variable key="channel" value="B2C_PORTAL" />
+                    <munit:variable key="operatorId" value="SYSTEM" />
+                    <munit:variable key="clientRequestId" value="test-client-req-6" />
+                </munit:variables>
+            </munit:set-event>
+
+            <flow-ref name="process-submit-switching-request" doc:name="Submit" />
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that doc:name="Status is 200, not 202"
+                                     expression="#[vars.httpStatus]"
+                                     is="#[MunitTools::equalTo(200)]"
+                                     message="A duplicate must be acknowledged, not re-submitted. 202 here would mean a second SII transaction and a rejection against the Seller." />
+
+            <munit-tools:assert-that doc:name="Existing request id is returned"
+                                     expression="#[payload.requestId]"
+                                     is="#[MunitTools::equalTo('SII-REQ-EXISTING')]" />
+
+            <munit-tools:assert-that doc:name="Status is ALREADY_SUBMITTED"
+                                     expression="#[payload.status]"
+                                     is="#[MunitTools::equalTo('ALREADY_SUBMITTED')]" />
+
+            <!--
+              The behavioural assertion that matters: SII was never called.
+              Asserting only on the response body would pass even if a
+              duplicate submission had been sent and then discarded.
+            -->
+            <munit-tools:verify-call doc:name="Verify SII was never called"
+                                     processor="flow-ref"
+                                     times="0">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="name"
+                                                whereValue="system-sii-submit-switching" />
+                </munit-tools:with-attributes>
+            </munit-tools:verify-call>
+        </munit:validation>
+    </munit:test>
+
+</mule>

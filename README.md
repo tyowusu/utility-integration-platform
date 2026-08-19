@@ -194,16 +194,21 @@ SII access requires accreditation with Acquirente Unico and issued client
 certificates; there is no public sandbox. Local runs target mocks.
 
 ```bash
-git clone https://github.com/<your-username>/utility-integration-platform.git
+git clone https://github.com/tyowusu/utility-integration-platform.git
 cd utility-integration-platform
 
-cp src/main/resources/properties/local.secure.yaml.example \
-   src/main/resources/properties/local.secure.yaml
-# populate it — see the header comments for the Secure Properties Tool usage
+# Generates throwaway keystores and a plaintext local secrets file. The
+# application builds its TLS context and resolves secure properties at
+# startup — neither is lazy — so it cannot boot until these exist.
+chmod +x scripts/bootstrap-local-dev.sh
+./scripts/bootstrap-local-dev.sh
 
-export MULE_SECURE_KEY='<your-16-or-32-char-key>'
-mvn clean package -Dmule.env=local -Dmule.secure.key=$MULE_SECURE_KEY
+mvn clean test -Dmule.env=local -Dmule.secure.key=localdevkey12345
 ```
+
+For a real deployment the secrets are encrypted rather than plaintext; see
+`local.secure.yaml.example` for the Secure Properties Tool usage, and the
+go-live guide below for how the key is injected by the pipeline.
 
 Exercise the eligibility endpoint, which needs no downstream mock:
 
@@ -217,6 +222,36 @@ and when each window closes.
 > Requires the MuleSoft EE repository for `ee:transform`. On Community
 > Runtime, substitute `set-payload` with inline DataWeave; flow logic is
 > unchanged.
+
+---
+
+## Deploying it live, and the QA automation around it
+
+**→ [Go-live and QA automation guide](docs/guides/go-live-and-qa-automation.md)**
+
+Step by step: Anypoint Studio → VS Code → Anypoint Platform (Exchange, API
+Manager, CloudHub 2.0) → GitHub Actions → an API gateway test suite that proves
+the policies are actually enforcing.
+
+The pipeline builds the artifact once and promotes the same binary through dev,
+test and production, with a manual approval and a deadline guard in front of
+production. Test automation spans six tools, each with a stated reason for being
+there:
+
+| Layer | Tool | Sees the gateway? |
+|---|---|---|
+| Flow logic, mocked dependencies | MUnit | No |
+| Scenario and regression | Karate | Yes |
+| Schema conformance, JWT attacks, concurrency | REST Assured | Yes |
+| Shareable collection, living documentation | Postman / Newman | Yes |
+| REST + SOAP end-to-end | SoapUI / ReadyAPI | Yes |
+| Peak-day load | JMeter | Yes |
+
+The dividing line that matters: **MUnit cannot see the gateway.** It runs the
+application in isolation and mocks its dependencies, while policies are applied
+by API Manager in front of it. If autodiscovery fails to bind, the application
+still starts and still serves traffic — ungoverned, with nothing in the logs to
+say so. The first assertion in the gateway suite exists to catch exactly that.
 
 ---
 
@@ -235,9 +270,31 @@ src/main/mule/
 src/main/resources/
   api/switching-eapi.raml              API contract
   dwl/*.dwl                            regulatory rules and mappings
-  properties/*.yaml                    environment configuration
+  properties/*.yaml                    environment configuration (local/dev/test/prod)
+
+src/test/munit/
+  switching-regulatory-rules-test-suite.xml   ARERA admissibility, idempotency
+  switching-eligibility-test-suite.xml        regulatory calendar invariants
+
+qa-automation/                         black-box suite (separate Maven project)
+  src/test/java/features/switching/    Karate — functional and regression
+  src/test/java/features/gateway/      Karate — policy enforcement
+  src/test/java/io/.../restassured/    schema conformance, JWT attacks, throttling
+  src/test/java/io/.../support/        TestTokens — adversarial JWT minting
+  src/test/resources/schemas/          JSON Schema, derived from the RAML
+  postman/                             Newman collection + environments
+  soapui/                              SoapUI / ReadyAPI, REST + SOAP end-to-end
+  jmeter/                              peak-day load profile
+
+.github/workflows/
+  ci-build.yml                         build, MUnit, coverage gate, spec lint
+  cd-deploy.yml                        build once → Exchange → dev → test → prod
+  api-tests.yml                        reusable QA workflow
+
+scripts/bootstrap-local-dev.sh         throwaway keystores and local secrets
 
 docs/
+  guides/go-live-and-qa-automation.md  end-to-end deployment and QA guide
   architecture/                        target architecture, integration catalogue
   adr/                                 architecture decision records
   security/                            data exchange security baseline
