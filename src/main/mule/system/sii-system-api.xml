@@ -95,10 +95,10 @@
                       path="${sii.path.switching_status}"
                       sendCorrelationId="ALWAYS"
                       target="payload">
+            <http:headers><![CDATA[#[{ "Accept": "application/xml" }]]]></http:headers>
             <http:query-params><![CDATA[#[{
                 "codiceRichiesta": vars.requestId
             }]]]></http:query-params>
-            <http:headers><![CDATA[#[{ "Accept": "application/xml" }]]]></http:headers>
         </http:request>
     </sub-flow>
 

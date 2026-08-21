@@ -53,7 +53,7 @@
                                                 whereValue="system-salesforce-get-contract" />
                 </munit-tools:with-attributes>
                 <munit-tools:then-return>
-                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { Id: 'a0X1t000001abcd', AccountId: '0011t000002efgh' }]" />
+                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { Id: 'a0X1t000001abcd', AccountId: '0011t000002efgh' }]" mediaType="application/java" />
                 </munit-tools:then-return>
             </munit-tools:mock-when>
 
@@ -75,7 +75,7 @@
                                                 whereValue="system-sii-submit-switching" />
                 </munit-tools:with-attributes>
                 <munit-tools:then-return>
-                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { esito: { codiceRichiesta: 'SII-REQ-0001', esitoCode: 'OK' } }]" />
+                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { esito: { codiceRichiesta: 'SII-REQ-0001', esitoCode: 'OK' } }]" mediaType="application/java" />
                 </munit-tools:then-return>
             </munit-tools:mock-when>
 
@@ -273,13 +273,25 @@
                                                 whereValue="system-salesforce-get-contract" />
                 </munit-tools:with-attributes>
                 <munit-tools:then-return>
-                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { Id: 'a0X1t000001abcd', AccountId: '0011t000002efgh' }]" />
+                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { Id: 'a0X1t000001abcd', AccountId: '0011t000002efgh' }]" mediaType="application/java" />
                 </munit-tools:then-return>
             </munit-tools:mock-when>
 
+            <!--
+              The real os:retrieve writes to target="existingRequest" rather
+              than to the payload. Mocking replaces the processor, so that
+              target routing never runs — the mocked value must be placed on
+              the variable directly, or the flow sees no duplicate and takes
+              the submit branch.
+            -->
             <munit-tools:mock-when doc:name="Mock: request already in flight" processor="os:retrieve">
                 <munit-tools:then-return>
-                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { requestId: 'SII-REQ-EXISTING', pdr: '12345678901234' }]" />
+                    <munit-tools:payload value="#[%dw 2.0 output application/java --- { requestId: 'SII-REQ-EXISTING', pdr: '12345678901234' }]" mediaType="application/java" />
+                    <munit-tools:variables>
+                        <munit-tools:variable key="existingRequest"
+                                              value="#[%dw 2.0 output application/java --- { requestId: 'SII-REQ-EXISTING', pdr: '12345678901234' }]"
+                                              mediaType="application/java" />
+                    </munit-tools:variables>
                 </munit-tools:then-return>
             </munit-tools:mock-when>
 
@@ -287,6 +299,13 @@
                 <munit-tools:with-attributes>
                     <munit-tools:with-attribute attributeName="name"
                                                 whereValue="system-sii-submit-switching" />
+                </munit-tools:with-attributes>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock Salesforce submission record (must not be called)" processor="flow-ref">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="name"
+                                                whereValue="system-salesforce-record-submission" />
                 </munit-tools:with-attributes>
             </munit-tools:mock-when>
         </munit:behavior>

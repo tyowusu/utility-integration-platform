@@ -24,7 +24,7 @@ var SUBMISSION_DEADLINE_DAY = 10
 var HORIZON_MONTHS = 6
 
 fun firstOfMonthAhead(base: Date, monthsAhead: Number): Date =
-    (((base + (monthsAhead * |P1M|)) as String {format: "yyyy-MM"}) ++ "-01")
+    (((base + (("P" ++ (monthsAhead as String) ++ "M") as Period)) as String {format: "yyyy-MM"}) ++ "-01")
         as Date {format: "yyyy-MM-dd"}
 
 fun submissionDeadlineFor(effectiveDate: Date): Date =

@@ -72,19 +72,18 @@
 
                         <deploymentSettings>
                             <generateDefaultPublicUrl>true</generateDefaultPublicUrl>
-                            <!--
-                              Object store persistence is not optional here.
-                              The switching correlation store is what reunites
-                              an asynchronous distributor outcome with the
-                              request that produced it; losing it on replica
-                              restart orphans in-flight switches.
-                            -->
-                            <persistentObjectStore>true</persistentObjectStore>
                             <updateStrategy>rolling</updateStrategy>
                             <forwardSslSession>true</forwardSslSession>
                             <disableAmLogForwarding>false</disableAmLogForwarding>
                         </deploymentSettings>
 
+                        <!--
+                          Object store persistence is not optional here.
+                          The switching correlation store is what reunites
+                          an asynchronous distributor outcome with the
+                          request that produced it; losing it on replica
+                          restart orphans in-flight switches.
+                        -->
                         <integrations>
                             <services>
                                 <objectStoreV2>

@@ -81,7 +81,7 @@ fun earliestEffectiveDateFrom(submissionDate: Date): Date = do {
     var dayOfMonth = (submissionDate as String {format: "d"}) as Number
     var monthsAhead = if (dayOfMonth <= SUBMISSION_DEADLINE_DAY) 1 else 2
     ---
-    (((submissionDate + (monthsAhead * |P1M|)) as String {format: "yyyy-MM"}) ++ "-01")
+    (((submissionDate + (("P" ++ (monthsAhead as String) ++ "M") as Period)) as String {format: "yyyy-MM"}) ++ "-01")
         as Date {format: "yyyy-MM-dd"}
 }
 
