@@ -1,0 +1,9 @@
+{
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "files.associations": {
+    "*.dwl": "dataweave",
+    "*.feature": "gherkin"
+  },
+  "maven.terminal.useJavaHome": true,
+  "editor.rulers": [100]
+}

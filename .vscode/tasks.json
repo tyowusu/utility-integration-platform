@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Mule: build + MUnit",
+      "type": "shell",
+      "command": "mvn clean test -Dmule.env=local -Dmule.secure.key=localdevkey12345",
+      "group": "test"
+    },
+    {
+      "label": "QA: Karate smoke against dev",
+      "type": "shell",
+      "command": "cd qa-automation && mvn test -Dtest=SwitchingFunctionalTest#smoke -Dkarate.env=dev -Dapi.base.url=$API_BASE_URL_DEV",
+      "group": "test"
+    }
+  ]
+}
