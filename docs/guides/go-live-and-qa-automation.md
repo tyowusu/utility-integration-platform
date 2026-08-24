@@ -126,16 +126,37 @@ This is the credential the pipeline uses. **Access Management → Connected Apps
 - **Scopes:**
   - Design Center Developer
   - Exchange Contributor
-  - Runtime Manager → *Cloudhub Admin*, *Create Applications*, *Manage Alerts* — tick **Sandbox and Production**
-  - API Manager → *Manage APIs Configuration*, *View APIs Configuration* — **Sandbox and Production**
+  - Runtime Manager → *Cloudhub Organization Admin*, **_Cloudhub Network Administrator_**, *Create Applications*, *Read Applications*, *Manage Alerts*
+  - API Manager → *Manage APIs Configuration*, *View APIs Configuration*
   - *Profile*, *View Organization*
+- **Environments:** tick **every** environment the pipeline touches, using the
+  names your organisation actually has.
 
 Copy the **Client ID** and **Client Secret** now. The secret is shown once.
 
+> **Use your real environment names.** A trial is often described as giving you
+> `Sandbox` and `Production`, but an organisation may instead have `dev`, `test`
+> and `prod` as three separate environments. Check **Access Management →
+> Environments** and use what is there. Deploying to an environment name that
+> does not exist fails with `Couldn't find environmentName named [Sandbox]`,
+> which is at least clear — the same mismatch in a scope picker is not, because
+> the scope simply never covers the environment you deploy to.
+>
+> Three separate environments is *better* than the shared-Sandbox compromise
+> described in 2.2: a policy change in test genuinely cannot affect dev, and
+> each gets its own API instance and client provider.
+
+> **Cloudhub Network Administrator is not optional for CloudHub 2.0.** Without
+> it the deployment fails at `GET .../targets/<target>/environments/<env>/domains`
+> with a bare `403` naming a path and nothing else. The plugin calls that
+> endpoint to resolve the public URL, and no other scope grants it — including
+> Cloudhub Organization Admin. Nothing in the message suggests a permission is
+> missing, so it reads as a platform fault rather than a configuration one.
+
 > Only the Runtime Manager and API Manager scopes have an environment picker.
-> Design Center, Exchange, Profile and View Organization are org-level. Miss
-> Production on the Runtime Manager scopes and everything works right up until
-> `deploy-prod`, which fails with a 403 that does not mention scopes.
+> Design Center, Exchange, Profile and View Organization are org-level. Miss an
+> environment on the Runtime Manager scopes and everything works right up until
+> you deploy to it, which fails with a 403 that does not mention scopes.
 
 > **Why a Connected App and not a username and password.** It is scoped to
 > exactly what the pipeline needs, revocable without touching anyone's account,
@@ -481,8 +502,91 @@ Do this from your machine, not from CI. It is what produces the application URL
 that CI needs, and it isolates deployment problems from pipeline problems —
 debugging both at once through a build log is miserable.
 
+### 10.0 Five things that must be true before the command will work
+
+None of these are visible from the command itself, and each fails with a
+message that names a symptom rather than a cause. Get them right first.
+
+**1. The environment-specific files must exist.** `bootstrap-local-dev.sh`
+generates `local.secure.yaml` and the `local-*` keystores only. `dev.yaml`
+references `properties/dev.secure.yaml`, `keystores/dev-keystore.jks` and
+`truststores/dev-truststore.jks`, and none of them are created for you. All
+three are gitignored, so a fresh clone has none of them and neither does CI.
+Generate the dev set the same way the script does for local — same
+`changeit` passwords, aliases `dev` and `seller-client-cert`.
+
+Missing, they surface as `CrashLoopBackOff` with `Couldn't find resource:
+properties/dev.secure.yaml neither on classpath or in file system`.
+
+**2. `groupId` must be your organisation UUID.** Exchange rejects anything
+else outright: *"The groupId 'io.github.portfolio' is invalid. It must be
+your organization UUID"*. Since CloudHub 2.0 deploys *from* Exchange rather
+than from an uploaded jar, this is not optional. The cost is that the
+coordinate is organisation-specific and a fork must change it.
+
+**3. Publish to Exchange first — this is a separate command.** CloudHub does
+not upload your jar; it fetches a published Exchange asset. Deploying before
+publishing fails with `404 ... Failed to retrieve artifact information from
+Exchange. Reason: There is no asset matching given parameters`, which sounds
+like a missing API rather than a missing publish.
+
 ```bash
-mvn clean deploy -DmuleDeploy -Pdev \
+mvn clean deploy -DskipTests -Danypoint.orgId=$ANYPOINT_ORG_ID
+```
+
+Note the absence of `-DmuleDeploy`. With it, the mule-maven-plugin deploys to
+CloudHub; without it, `deploy` publishes to Exchange. Exchange versions are
+immutable, so every republish needs a `<version>` bump — which is the point:
+`1.0.0` and `1.0.1` are distinguishable artifacts rather than two builds
+sharing a label.
+
+**4. `api.id` must be forwarded to the deployed application.** Passing
+`-Dapi.id=...` sets a *Maven* property. It reaches the running application
+only if `cloudhub2Deployment` forwards it:
+
+```xml
+<properties>
+    <mule.env>${mule.env}</mule.env>
+    <anypoint.platform.client_id>${autodiscovery.clientId}</anypoint.platform.client_id>
+    <api.id>${api.id}</api.id>
+</properties>
+```
+
+Without it the application cannot resolve `${api.id}` in the autodiscovery
+element and never starts. With a *wrong* value it starts and then fails its
+readiness probe with `API <id>: Not Ready. API not found in the API
+Platform` — worth reading carefully, because a mistyped instance id produces
+exactly this and the id in the message is easy to skim past.
+
+**5. Last-mile security must be nested under `http/inbound`.** The plugin
+also accepts `lastMileSecurity` at the top level of `deploymentSettings`,
+where it is silently ignored: the deployment spec then reports
+`lastMileSecurity: true` while `http.inbound` stays empty, and CloudHub reads
+the nested value. The application is healthy, `1/1` replicas are started,
+nothing appears in its log, and every request returns a bare **502** from the
+ingress.
+
+```xml
+<deploymentSettings>
+    <http>
+        <inbound>
+            <lastMileSecurity>true</lastMileSecurity>
+        </inbound>
+    </http>
+</deploymentSettings>
+```
+
+This is needed because the inbound listener is HTTPS with its own TLS
+context. Otherwise CloudHub terminates TLS at the edge and forwards plaintext
+to a socket expecting TLS. Do **not** also set `forwardSslSession` — a shared
+space rejects it with `ForwardSslSession is not supported for the given
+deployment target`; it requires a private space.
+
+### 10.1 Deploy
+
+```bash
+mvn deploy -DmuleDeploy -Pdev \
+  -DskipMunitTests \
   -DconnectedApp.clientId=$ANYPOINT_CLIENT_ID \
   -DconnectedApp.clientSecret=$ANYPOINT_CLIENT_SECRET \
   -Danypoint.orgId=$ANYPOINT_ORG_ID \
@@ -494,7 +598,17 @@ mvn clean deploy -DmuleDeploy -Pdev \
 
 Every one of those values came from steps 2 and 8.
 
-### 10.1 Confirm it deployed *and* bound
+`-DskipMunitTests` is there because MUnit boots a Mule EE runtime, which
+resolves `com.mulesoft.licm:licm` from MuleSoft's private Nexus — a paid
+support entitlement distinct from the Exchange credentials configured in step
+3. Without it the deployment fails on a 401 for a licensing artifact rather
+than on anything about the deployment. Run the suites in Anypoint Studio,
+which uses its own bundled licensed runtime.
+
+`scripts/deploy-dev.sh` wraps all of this and reads the three secrets from the
+macOS Keychain, so a redeploy is one command rather than a retyping exercise.
+
+### 10.2 Confirm it deployed *and* bound
 
 **Runtime Manager → Applications →** `switching-process-api-dev`. Copy the
 public URL. Then:
@@ -502,20 +616,26 @@ public URL. Then:
 ```bash
 # Should return 200 and the regulatory calendar
 curl -k "$APP_URL/api/supply-points/12345678901234/eligibility" \
-  -H "client_id: $QA_CLIENT_ID" -H "client_secret: $QA_CLIENT_SECRET"
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 
-# Should return 401 or 403 — this is the autodiscovery check
+# Should be refused — this is the autodiscovery check
 curl -k -o /dev/null -w "%{http_code}\n" \
   "$APP_URL/api/supply-points/12345678901234/eligibility"
 ```
 
-If the second command returns **200**, the app deployed but never bound to its
-API Manager instance. It is serving traffic ungoverned. Check `api.id` against
-the instance *in this environment*, and confirm the platform client ID and
-secret were passed. Do not proceed until that second call is refused — every
-gateway test downstream assumes it.
+Read the second result carefully; it has four distinct meanings.
 
-### 10.2 Keep the URL
+| Response | Meaning |
+|---|---|
+| **401/403**, or a gateway body such as `{"error": "JWT Token is required."}` | Correct. Autodiscovery bound and policies are enforcing. |
+| **200** | The app deployed but never bound. It is serving traffic **ungoverned**. Check `api.id` against the instance *in this environment* and confirm the platform client id and secret were passed. |
+| **empty 503** | Autodiscovery bound to something that does not exist — typically a placeholder or mistyped `api.id`. The gatekeeper policy holds all traffic while waiting for a policy set that never arrives. Note this contradicts the "fails silently and serves ungoverned" description in 8.2: with a *nonexistent* instance it fails closed, not open. |
+| **502** | The ingress cannot reach the application at all — a transport problem, not a policy one. See 10.0 point 5. The application will look healthy with `1/1` replicas started. |
+
+Do not proceed until that second call is refused — every gateway test
+downstream assumes it.
+
+### 10.3 Keep the URL
 
 You now have `API_BASE_URL_DEV`. Repeat step 10 with `-Ptest` and the test
 credentials to get `API_BASE_URL_TEST`. Leave production for the pipeline.
@@ -840,7 +960,18 @@ finding.
 | Deploy fails: *target not found* | `ch2.target` mismatch | Step 9 — copy the exact name from the Deploy dialog |
 | Deploy succeeds, app crashes on start | `api.id` invalid, or platform client ID/secret missing | Check `API_INSTANCE_ID_*` and `ANYPOINT_PLATFORM_CLIENT_*` |
 | **Anonymous request returns 200** | Autodiscovery did not bind | The app is ungoverned. Check `api.id` matches the instance *in this environment*, and that platform client ID/secret were passed at deploy. |
-| `403` on `deploy-prod` only | Connected App missing Production scope | Step 2.3 — Runtime Manager scopes need Production ticked too |
+| **Anonymous request returns an empty `503`** | Autodiscovery bound to a nonexistent instance | The gatekeeper policy is holding all traffic waiting for a policy set that never arrives. Usually a placeholder or mistyped `api.id`. Note this is the *opposite* of the failure mode in 8.2 — it fails closed, not open. |
+| **Every request returns a bare `502`**, app healthy at `1/1` replicas | Ingress cannot reach the listener | `lastMileSecurity` must be nested under `deploymentSettings/http/inbound`. At the top level it is accepted and silently ignored. See 10.0 point 5. |
+| `ForwardSslSession is not supported for the given deployment target` | Shared space | It needs a private space. Remove it; keep `lastMileSecurity`. |
+| `Couldn't find environmentName named [Sandbox]` | Environment names differ | Check **Access Management → Environments**. An org may have `dev`/`test`/`prod` rather than `Sandbox`/`Production`. Fix `deploy.env` in each `pom.xml` profile. |
+| `403` on `.../targets/<target>/environments/<env>/domains` | Connected App missing **Cloudhub Network Administrator** | Step 2.3. No other Runtime Manager scope grants it, including Cloudhub Organization Admin, and the message names only a path. |
+| `404 ... There is no asset matching given parameters` on deploy | Artifact never published to Exchange | CloudHub 2.0 deploys *from* Exchange. Publish first with `mvn deploy` **without** `-DmuleDeploy`. See 10.0 point 3. |
+| `The groupId '<x>' is invalid. It must be your organization UUID` | `groupId` is not the org UUID | Exchange requires it. See 10.0 point 2. |
+| `An asset already exists with this version and published lifecycle state` | Republishing an existing Exchange version | Exchange versions are immutable. Bump `<version>` in `pom.xml`. |
+| `CrashLoopBackOff — Couldn't find resource: properties/<env>.secure.yaml` | Environment files were never generated | `bootstrap-local-dev.sh` only creates the `local` set. See 10.0 point 1. Applies to the `<env>-keystore.jks` and `<env>-truststore.jks` too. |
+| `API <id>: Not Ready. API not found in the API Platform` | `api.id` wrong, or not forwarded to the app | Compare the id in the message against the instance id in API Manager — a dropped digit produces exactly this. Confirm `cloudhub2Deployment/properties` forwards `api.id`. See 10.0 point 4. |
+| `Cannot create embedded container` / `401` on `com.mulesoft.licm:licm` | No Mule EE runtime entitlement | MUnit needs a licensed EE runtime from MuleSoft's private Nexus, which Exchange credentials do not cover. Run the suites in Anypoint Studio; pass `-DskipMunitTests` when deploying. |
+| `403` on `deploy-prod` only | Connected App missing Production scope | Step 2.3 — Runtime Manager scopes need every environment ticked |
 | CI verify jobs fail on first run | `API_BASE_URL_*` not set | You skipped step 10. Deploy by hand, capture the URL, then set the secret. |
 | Rate-limit test finds no 429 | Policy absent, or threshold above what CI can reach | Step 8.3 — add SLA rate limiting and set the QA tier low |
 | Karate: connection refused right after deploy | CloudHub reports complete before the replica serves | The workflow's wait loop handles this; locally, allow 60–90s |
