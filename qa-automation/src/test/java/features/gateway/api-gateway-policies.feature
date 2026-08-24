@@ -32,10 +32,17 @@ Feature: API Manager gateway policy enforcement
     Given path 'supply-points', validPdr, 'eligibility'
     # No Authorization header, no client_id/client_secret headers.
     When method get
-    Then assert responseStatus == 401 || responseStatus == 403
+    # 400 is included deliberately. A missing token is answered by the JWT
+    # validation policy with 400 {"error": "JWT Token is required."}, not the
+    # 401 an absent credential might suggest — a malformed or unsigned token
+    # does return 401. What this scenario asserts is that the gateway refused
+    # the request, and all three statuses are refusals; narrowing to 401/403
+    # would fail against correct behaviour.
+    Then assert responseStatus == 400 || responseStatus == 401 || responseStatus == 403
     # The gateway, not the application, produced this. The application's own
     # error handler always emits an object with error.correlationId; the
-    # gateway's does not. Asserting the absence tells us which layer answered.
+    # gateway's does not. Asserting the absence tells us which layer answered,
+    # and is what stops the status list above from being merely permissive.
     And match response != '#[_ != null] error.correlationId'
 
   @policy-client-id
@@ -44,7 +51,12 @@ Feature: API Manager gateway policy enforcement
     And header client_id = unapprovedClientId
     And header client_secret = unapprovedClientSecret
     When method get
-    Then assert responseStatus == 401 || responseStatus == 403
+    # 400 for the same reason as above: this request carries no bearer token,
+    # so JWT validation refuses it before contract checking is reached. The
+    # scenario still proves an unentitled caller cannot get through, which is
+    # the point — but note it does not, on its own, prove the *contract* was
+    # what refused it.
+    Then assert responseStatus == 400 || responseStatus == 401 || responseStatus == 403
 
   @policy-client-id
   Scenario: An approved client is admitted

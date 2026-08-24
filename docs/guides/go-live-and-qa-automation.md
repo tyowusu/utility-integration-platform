@@ -453,10 +453,31 @@ health check.
 | Policy | Configuration | Why |
 |---|---|---|
 | **Client ID enforcement** | Credentials in headers `client_id` / `client_secret` | Identifies which consumer — B2C portal, B2B portal, Salesforce — made each call. Under ARERA commercial-quality reporting the Seller must evidence request origin, so this is a compliance control, not only an access control. |
-| **OpenID Connect / JWT validation** | Your IdP's JWKS URL; validate `exp`, `aud`, signature | Validate the signature **and** the audience. A policy that reads claims without verifying the signature accepts a forged token — and every happy-path test still passes. |
+| **OpenID Connect / JWT validation** | Your IdP's JWKS URL; validate `exp`, `aud`, signature; **set the Client ID Expression to match your IdP** | Validate the signature **and** the audience. A policy that reads claims without verifying the signature accepts a forged token — and every happy-path test still passes. |
 | **Rate limiting — SLA based** | Tiers per consumer | Portals and Salesforce have very different traffic shapes. One shared limit means the B2C peak throttles the contact centre's agents. |
 | **Spike control** | e.g. 20/sec, queuing enabled | Absorbs the 10th-of-the-month burst rather than rejecting it. Different intent from rate limiting: spike control smooths, rate limiting enforces a contract. |
 | **HTTP caching** | On `GET /supply-points/{pdr}/eligibility`, short TTL | The regulatory calendar changes once a day at most, and every portal form load hits it. |
+
+> **The JWT policy's Client ID Expression defaults to the wrong claim for
+> Auth0.** It ships as `#[vars.claimSet.client_id]`, but an Auth0
+> client-credentials token has no `client_id` claim — the client identifier is
+> in `azp`, per the OIDC spec. `client_id` is an Okta and Azure AD convention.
+>
+> Left at the default the expression resolves to nothing, no client can be
+> identified, and a perfectly valid token is refused with `403
+> {"error": "Authentication denied."}` — which reads as a credentials problem
+> rather than a claim-name mismatch. Decode a real token from your IdP and use
+> whichever claim actually carries the client id:
+>
+> ```
+> Client ID Expression:  #[vars.claimSet.azp]
+> ```
+>
+> Note also that this policy performs contract validation itself, via
+> **Skip Client Id Validation** and the expression above. A separate Client ID
+> Enforcement policy is usually unnecessary — and would conflict with a suite
+> that authenticates with a bearer token alone, since that policy expects
+> `client_id`/`client_secret` headers.
 
 Set the **test** instance's rate limit deliberately low — say 20 requests per
 10 seconds. Step 14 explains why.
@@ -627,7 +648,8 @@ Read the second result carefully; it has four distinct meanings.
 
 | Response | Meaning |
 |---|---|
-| **401/403**, or a gateway body such as `{"error": "JWT Token is required."}` | Correct. Autodiscovery bound and policies are enforcing. |
+| **400** `{"error": "JWT Token is required."}` | Correct, and what a *missing* token actually returns — not the 401 you might expect. A malformed or unsigned token does return 401. Autodiscovery bound and policies are enforcing. |
+| **401/403** | Also correct. |
 | **200** | The app deployed but never bound. It is serving traffic **ungoverned**. Check `api.id` against the instance *in this environment* and confirm the platform client id and secret were passed. |
 | **empty 503** | Autodiscovery bound to something that does not exist — typically a placeholder or mistyped `api.id`. The gatekeeper policy holds all traffic while waiting for a policy set that never arrives. Note this contradicts the "fails silently and serves ungoverned" description in 8.2: with a *nonexistent* instance it fails closed, not open. |
 | **502** | The ingress cannot reach the application at all — a transport problem, not a policy one. See 10.0 point 5. The application will look healthy with `1/1` replicas started. |

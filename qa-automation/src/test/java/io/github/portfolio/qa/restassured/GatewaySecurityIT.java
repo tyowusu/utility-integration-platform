@@ -94,11 +94,19 @@ class GatewaySecurityIT {
         // application deployed but failed to bind to its API Manager instance,
         // it serves traffic ungoverned and this returns 200 — the one failure
         // mode that produces no error anywhere in the logs.
-        assertTrue(status == 401 || status == 403,
+        //
+        // 400 is an accepted refusal: a *missing* token is answered by the JWT
+        // validation policy with 400 {"error": "JWT Token is required."}, while
+        // a malformed or unsigned one returns 401. What matters here is that
+        // the gateway refused, not which refusal it chose.
+        assertTrue(status == 400 || status == 401 || status == 403,
                 "Expected the gateway to refuse an anonymous request but got " + status
                         + ". If this is 200, API Manager autodiscovery did not bind: check that "
                         + "api.id matches the API instance in this environment and that "
-                        + "anypoint.platform.client_id/secret were supplied at deploy time.");
+                        + "anypoint.platform.client_id/secret were supplied at deploy time. "
+                        + "If this is an empty 503, autodiscovery bound to an instance that does "
+                        + "not exist — check api.id for a typo. If this is 502, the ingress "
+                        + "cannot reach the application at all: see lastMileSecurity in pom.xml.");
     }
 
     @Test
