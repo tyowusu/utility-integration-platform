@@ -30,7 +30,7 @@
           same artifact is promoted across environments rather than rebuilt.
         -->
         <anypoint.uri>https://anypoint.mulesoft.com</anypoint.uri>
-        <ch2.target>Cloudhub-EU-Central-1</ch2.target>
+        <ch2.target>Cloudhub-US-East-2</ch2.target>
         <ch2.replicas>1</ch2.replicas>
         <ch2.vcores>0.1</ch2.vcores>
         <deploy.env>Sandbox</deploy.env>
