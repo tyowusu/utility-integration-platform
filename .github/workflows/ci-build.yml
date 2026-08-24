@@ -70,8 +70,8 @@ jobs:
               },
               {
                 "id": "mulesoft-private",
-                "username": "${{ secrets.MULESOFT_NEXUS_USERNAME }}",
-                "password": "${{ secrets.MULESOFT_NEXUS_PASSWORD }}"
+                "username": "${{ secrets.MULESOFT_NEXUS_USERNAME || 'not-configured' }}",
+                "password": "${{ secrets.MULESOFT_NEXUS_PASSWORD || 'not-configured' }}"
               }
             ]
 
