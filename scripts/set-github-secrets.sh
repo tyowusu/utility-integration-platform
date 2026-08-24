@@ -4,7 +4,7 @@
 # step 11).
 #
 # Sensitive values are piped straight from the macOS Keychain into `gh` and
-# never printed. Store them first — see scripts/deploy-dev.sh for the
+# never printed. Store them first — see scripts/deploy.sh for the
 # add-generic-password commands.
 #
 # Requires a GitHub token with "Secrets: Read and write" on the repository.

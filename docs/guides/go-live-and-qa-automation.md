@@ -97,24 +97,32 @@ This becomes `ANYPOINT_ORG_ID`, and appears in the Exchange Maven URL in
 
 ### 2.2 Environments
 
-**Access Management → Environments.** A trial gives you `Sandbox` and
-`Production`. The `pom.xml` profiles map onto them:
+**Access Management → Environments.** Read the names that are actually there
+and set `deploy.env` in each `pom.xml` profile to match. Two shapes are common:
 
-| Profile | Anypoint environment | Application name |
-|---|---|---|
-| `dev` | Sandbox | `switching-process-api-dev` |
-| `test` | Sandbox | `switching-process-api-test` |
-| `prod` | Production | `switching-process-api` |
+| Profile | Three environments | Trial default | Application name |
+|---|---|---|---|
+| `dev` | `dev` | Sandbox | `switching-process-api-dev` |
+| `test` | `test` | Sandbox | `switching-process-api-test` |
+| `prod` | `prod` | Production | `switching-process-api` |
 
-`dev` and `test` share Sandbox and are separated by application name. On a paid
-tenant each would get its own environment. On a trial this is the honest
-compromise — and it is why they get *separate API Manager instances* in step 8,
-so a policy change in test cannot silently alter dev.
+If you have three, take them — each gets its own API instance, its own client
+provider association and its own environment credentials, so a policy change
+in test cannot reach dev.
+
+If dev and test share one Sandbox, they are separated only by application name.
+That is the honest compromise on a constrained tenant, and it is why they still
+get *separate API Manager instances* in step 8.
+
+Either way the profiles must name environments that exist. `Sandbox` against an
+organisation whose environment is called `dev` fails at deploy time with
+`Couldn't find environmentName named [Sandbox]`.
 
 While you are on this screen, copy each environment's **client ID and secret**
 (shown per environment). These become `ANYPOINT_PLATFORM_CLIENT_ID_DEV` and
 friends, and they are what lets a deployed app authenticate to API Manager for
-autodiscovery.
+autodiscovery. They are per-environment: an application deployed to test with
+dev's credentials will not bind.
 
 ### 2.3 Connected App
 
@@ -626,7 +634,7 @@ support entitlement distinct from the Exchange credentials configured in step
 than on anything about the deployment. Run the suites in Anypoint Studio,
 which uses its own bundled licensed runtime.
 
-`scripts/deploy-dev.sh` wraps all of this and reads the three secrets from the
+`scripts/deploy.sh` wraps all of this and reads the three secrets from the
 macOS Keychain, so a redeploy is one command rather than a retyping exercise.
 
 ### 10.2 Confirm it deployed *and* bound

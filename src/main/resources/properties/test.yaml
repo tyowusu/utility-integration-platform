@@ -9,7 +9,12 @@
 
 http:
   host: "0.0.0.0"
-  port: "8081"
+  # 8082, not 8081: CloudHub routes the public URL to 8081 for a plaintext
+  # listener and 8082 for a TLS one, and this listener is HTTPS with its own
+  # TLS context. On 8081 the ingress finds a TLS socket where it expects
+  # plaintext and returns a bare 502, while the application reports healthy.
+  # See dev.yaml and go-live guide 10.0.
+  port: "8082"
 
 api:
   # Overridden at deploy time with -Dapi.id=... See dev.yaml for why.
