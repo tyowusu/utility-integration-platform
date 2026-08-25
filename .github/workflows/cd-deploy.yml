@@ -244,6 +244,13 @@ jobs:
   verify-dev:
     name: QA suite against dev
     needs: deploy-dev
+    # Explicit condition, even though `needs` alone looks sufficient. Skip
+    # state propagates down the dependency chain: deploy-dev only runs
+    # because its own gate lets it past a skipped upstream job, and a job
+    # resurrected that way does not un-skip its dependents. Without this,
+    # deploy-dev deployed and then nothing verified it — the run
+    # reported success with the verification silently skipped.
+    if: ${{ !cancelled() && needs.deploy-dev.result == 'success' }}
     uses: ./.github/workflows/api-tests.yml
     with:
       environment: dev
@@ -333,6 +340,13 @@ jobs:
   verify-test:
     name: Regression + performance against test
     needs: deploy-test
+    # Explicit condition, even though `needs` alone looks sufficient. Skip
+    # state propagates down the dependency chain: deploy-test only runs
+    # because its own gate lets it past a skipped upstream job, and a job
+    # resurrected that way does not un-skip its dependents. Without this,
+    # deploy-test deployed and then nothing verified it — the run
+    # reported success with the verification silently skipped.
+    if: ${{ !cancelled() && needs.deploy-test.result == 'success' }}
     uses: ./.github/workflows/api-tests.yml
     with:
       environment: test
@@ -455,6 +469,13 @@ jobs:
   verify-prod:
     name: Production smoke
     needs: deploy-prod
+    # Explicit condition, even though `needs` alone looks sufficient. Skip
+    # state propagates down the dependency chain: deploy-prod only runs
+    # because its own gate lets it past a skipped upstream job, and a job
+    # resurrected that way does not un-skip its dependents. Without this,
+    # deploy-prod deployed and then nothing verified it — the run
+    # reported success with the verification silently skipped.
+    if: ${{ !cancelled() && needs.deploy-prod.result == 'success' }}
     uses: ./.github/workflows/api-tests.yml
     with:
       environment: prod
