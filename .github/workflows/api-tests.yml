@@ -223,6 +223,7 @@ jobs:
           mvn --batch-mode --no-transfer-progress \
             test-compile failsafe:integration-test failsafe:verify \
             -Dit.test=GatewaySecurityIT \
+            -DexcludedGroups=requires-downstream \
             -Dapi.base.url=${BASE_URL} \
             -Daccess.token=${{ steps.token.outputs.token }}
 
@@ -231,6 +232,7 @@ jobs:
           mvn --batch-mode --no-transfer-progress \
             failsafe:integration-test failsafe:verify \
             -Dit.test=SwitchingContractIT \
+            -DexcludedGroups=requires-downstream \
             -Dapi.base.url=${BASE_URL} \
             -Daccess.token=${{ steps.token.outputs.token }}
 
@@ -314,6 +316,42 @@ jobs:
             -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
             -Dapi.audience=${{ needs.resolve.outputs.audience }}
 
+      - name: Contract tests requiring downstream stand-ins
+        if: always()
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress \
+            test-compile failsafe:integration-test failsafe:verify \
+            -Dgroups=requires-downstream \
+            -Dapi.base.url=${BASE_URL} \
+            -Daccess.token=${{ steps.token.outputs.token }}
+
+      - name: Install Newman
+        run: npm install -g newman newman-reporter-htmlextra
+
+      # The 20 — Submit and 30 — Status folders are exactly the requests that
+      # need downstream stand-ins. Their contract-violation cases (400, 422)
+      # do pass, and move here with them — Newman selects by folder, not by
+      # request. Nothing is lost: the blocking Karate suite covers the same
+      # refusals, so this only stops them being asserted twice.
+      - name: Newman folders requiring downstream stand-ins
+        if: always()
+        working-directory: qa-automation/postman
+        run: |
+          newman run switching-api.postman_collection.json \
+            --environment env.${{ inputs.environment }}.postman_environment.json \
+            --env-var "base_url=${BASE_URL}" \
+            --env-var "token_url=${TOKEN_URL}" \
+            --env-var "audience=${{ needs.resolve.outputs.audience }}" \
+            --env-var "client_id=${{ secrets.API_CLIENT_ID }}" \
+            --env-var "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            --folder '00 — Auth' \
+            --folder '20 — Submit (writes — dev/test only)' \
+            --folder '30 — Status' \
+            --insecure \
+            --reporters cli,junit \
+            --reporter-junit-export ../../newman-mocks-results.xml
+
       # fail_on_failure is false on purpose. The results are worth publishing —
       # they show exactly which coverage is missing — but they must not turn a
       # check red for an absence everyone already knows about.
@@ -321,7 +359,7 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@v4
         with:
-          report_paths: 'qa-automation/target/surefire-reports/*.xml'
+          report_paths: 'qa-automation/target/surefire-reports/*.xml,qa-automation/target/failsafe-reports/*.xml,newman-mocks-results.xml'
           check_name: 'API tests (needs mocks) — ${{ inputs.environment }}'
           fail_on_failure: false
 
@@ -366,9 +404,6 @@ jobs:
           # find nor the collection it looked in. These strings must stay in
           # step with the folder names inside switching-api.postman_collection.json.
           FOLDERS="--folder '00 — Auth' --folder '10 — Eligibility (read-only, safe for prod smoke)' --folder '40 — Gateway policies'"
-          if [ "${{ inputs.run_writes }}" = "true" ]; then
-            FOLDERS="$FOLDERS --folder '20 — Submit (writes — dev/test only)' --folder '30 — Status'"
-          fi
 
           eval newman run switching-api.postman_collection.json \
             -e env.${{ inputs.environment }}.postman_environment.json \
