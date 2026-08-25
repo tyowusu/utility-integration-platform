@@ -110,7 +110,36 @@ Feature: API Manager gateway policy enforcement
     Then assert responseStatus == 401 || responseStatus == 403
 
   # ---------------------------------------------------------------------------
+  # Transport security
+  # ---------------------------------------------------------------------------
+  @policy-transport
+  Scenario: Security headers are present on a successful response
+    * if (!accessToken) karate.abort()
+    Given path 'supply-points', validPdr, 'eligibility'
+    And header Authorization = 'Bearer ' + accessToken
+    When method get
+    Then status 200
+    # Content-Type must be pinned. A response that omits it, or returns
+    # text/html, is a sign the gateway served an error page rather than the
+    # application serving a payload.
+    And match responseHeaders['Content-Type'][0] contains 'application/json'
+
+  @policy-transport
+  Scenario: An unsupported method on a known path is refused
+    Given path 'supply-points', validPdr, 'eligibility'
+    And header Authorization = 'Bearer ' + (accessToken || 'none')
+    And request {}
+    When method delete
+    Then assert responseStatus == 405 || responseStatus == 401 || responseStatus == 403
+
+  # ---------------------------------------------------------------------------
   # Rate limiting / spike control
+  #
+  # These run LAST, and deliberately so. The burst below exhausts the quota for
+  # the whole window, and the rate limit is keyed per client — so any scenario
+  # ordered after it gets 429 where it expects 200, and fails for a reason that
+  # has nothing to do with what it is testing. Karate executes scenarios in file
+  # order, so position here is load-bearing rather than cosmetic.
   # ---------------------------------------------------------------------------
   @policy-rate-limit
   Scenario: Sustained traffic above the configured limit is throttled with 429
@@ -146,26 +175,3 @@ Feature: API Manager gateway policy enforcement
     # "mismatched input '{' expecting <EOF>" and no scenario runs at all.
     * def r = karate.call('classpath:helpers/single-eligibility-call.feature', { baseUrl: baseUrl, pdr: validPdr, token: accessToken })
     * if (r.responseStatus == 429) karate.match(r.responseHeaders['x-ratelimit-remaining'], '#notnull')
-
-  # ---------------------------------------------------------------------------
-  # Transport security
-  # ---------------------------------------------------------------------------
-  @policy-transport
-  Scenario: Security headers are present on a successful response
-    * if (!accessToken) karate.abort()
-    Given path 'supply-points', validPdr, 'eligibility'
-    And header Authorization = 'Bearer ' + accessToken
-    When method get
-    Then status 200
-    # Content-Type must be pinned. A response that omits it, or returns
-    # text/html, is a sign the gateway served an error page rather than the
-    # application serving a payload.
-    And match responseHeaders['Content-Type'][0] contains 'application/json'
-
-  @policy-transport
-  Scenario: An unsupported method on a known path is refused
-    Given path 'supply-points', validPdr, 'eligibility'
-    And header Authorization = 'Bearer ' + (accessToken || 'none')
-    And request {}
-    When method delete
-    Then assert responseStatus == 405 || responseStatus == 401 || responseStatus == 403
