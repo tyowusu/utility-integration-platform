@@ -16,7 +16,7 @@
     -->
     <groupId>c7586f41-62a9-40a2-9665-aa6c7d456e66</groupId>
     <artifactId>switching-process-api</artifactId>
-    <version>1.0.3</version>
+    <version>1.0.4</version>
     <packaging>mule-application</packaging>
 
     <name>switching-process-api</name>

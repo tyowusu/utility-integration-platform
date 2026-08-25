@@ -83,6 +83,19 @@ SECURE_KEY="$(keychain "${SECURE_KEY_ITEM}")"
 # inside the jar changed — CloudHub 2.0 deploys from Exchange, not from a
 # local file, and Exchange versions are immutable so the pom version must be
 # bumped for a republish to succeed.
+#
+# "Anything inside the jar" is NOT the same as "anything git reports". The
+# secure properties files are gitignored, so a clean `git status` says nothing
+# about whether properties/<env>.secure.yaml has been added since the last
+# publish. Deploying a stale Exchange artifact then fails at startup with
+#
+#   Couldn't find resource: properties/test.secure.yaml
+#     neither on classpath or in file system
+#
+# which reads as a packaging bug in the current build even though the current
+# build contains the file perfectly well — the runtime is running an older
+# artifact. Compare `unzip -l target/*.jar` against what you expect, or simply
+# republish whenever an environment is deployed for the first time.
 if [[ "${1:-}" == "--publish" ]]; then
   echo "==> Publishing to Exchange"
   mvn clean deploy -DskipTests -DskipMunitTests -Danypoint.orgId="${ORG_ID}"
