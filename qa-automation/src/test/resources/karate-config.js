@@ -34,6 +34,19 @@ function fn() {
         clientSecret: java.lang.System.getProperty('client.secret') || '',
         tokenUrl: java.lang.System.getProperty('token.url') || '',
 
+        /*
+         * Which API the token is issued for. Required by Auth0 on a
+         * client-credentials grant; inferred from scope by Okta and Azure AD.
+         *
+         * Per-environment by design. Sharing one audience across dev, test and
+         * prod means a token minted for dev is cryptographically valid in
+         * prod, and only API Manager contracts stop it being accepted — the
+         * isolation rests entirely on the contract layer. Registering a
+         * separate audience per environment moves that check into the token
+         * itself, where a mismatch is refused before contracts are consulted.
+         */
+        audience: java.lang.System.getProperty('api.audience') || 'switching-experience-api',
+
         // A client registered to the API instance but WITHOUT an approved
         // contract. Used to prove that client-id enforcement rejects it.
         unapprovedClientId: java.lang.System.getProperty('unapproved.client.id') || 'not-a-registered-client',

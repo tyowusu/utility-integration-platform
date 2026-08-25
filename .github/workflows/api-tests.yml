@@ -66,6 +66,7 @@ jobs:
     outputs:
       base_url: ${{ steps.env.outputs.base_url }}
       token_url: ${{ steps.env.outputs.token_url }}
+      audience: ${{ steps.env.outputs.audience }}
     steps:
       - id: env
         run: |
@@ -77,6 +78,21 @@ jobs:
             prod) echo "base_url=${{ secrets.API_BASE_URL_PROD }}" >> "$GITHUB_OUTPUT"
                   echo "token_url=${{ secrets.TOKEN_URL_PROD }}"   >> "$GITHUB_OUTPUT" ;;
           esac
+          # Which API the token is issued for. Auth0 requires it on a
+          # client-credentials grant against a custom API; omitting it yields
+          # a token for the provider's own management API, which the gateway
+          # then rejects on aud — a 401 that reads as bad credentials.
+          #
+          # A repository *variable*, not a secret: an audience is an
+          # identifier, not a credential. Set API_AUDIENCE_<ENV> to give each
+          # environment its own, so a dev token is refused by test on aud
+          # rather than relying solely on API Manager contracts.
+          case "${{ inputs.environment }}" in
+            dev)  AUD="${{ vars.API_AUDIENCE_DEV }}"  ;;
+            test) AUD="${{ vars.API_AUDIENCE_TEST }}" ;;
+            prod) AUD="${{ vars.API_AUDIENCE_PROD }}" ;;
+          esac
+          echo "audience=${AUD:-switching-experience-api}" >> "$GITHUB_OUTPUT"
 
       # A belt-and-braces guard. run_writes is already false for prod in the
       # calling workflow, but a manual dispatch could set it, and the cost of
@@ -113,6 +129,7 @@ jobs:
             -d "grant_type=client_credentials" \
             -d "client_id=${{ secrets.API_CLIENT_ID }}" \
             -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            -d "audience=${{ needs.resolve.outputs.audience }}" \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
@@ -126,7 +143,8 @@ jobs:
             -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
             -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
-            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }}
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }}
 
       - name: Full functional suite (writes)
         if: inputs.run_writes
@@ -138,7 +156,8 @@ jobs:
             -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
             -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
-            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }}
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }}
 
       - name: Gateway policy suite
         if: inputs.run_gateway_policies
@@ -151,6 +170,7 @@ jobs:
             -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
             -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }} \
             -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
             -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
 
@@ -249,6 +269,7 @@ jobs:
             -d "grant_type=client_credentials" \
             -d "client_id=${{ secrets.API_CLIENT_ID }}" \
             -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            -d "audience=${{ needs.resolve.outputs.audience }}" \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
