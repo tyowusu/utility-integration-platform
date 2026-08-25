@@ -463,7 +463,7 @@ health check.
 | **Client ID enforcement** | Credentials in headers `client_id` / `client_secret` | Identifies which consumer — B2C portal, B2B portal, Salesforce — made each call. Under ARERA commercial-quality reporting the Seller must evidence request origin, so this is a compliance control, not only an access control. |
 | **OpenID Connect / JWT validation** | Your IdP's JWKS URL; validate `exp`, `aud`, signature; **set the Client ID Expression to match your IdP** | Validate the signature **and** the audience. A policy that reads claims without verifying the signature accepts a forged token — and every happy-path test still passes. |
 | **Rate limiting — SLA based** | Tiers per consumer | Portals and Salesforce have very different traffic shapes. One shared limit means the B2C peak throttles the contact centre's agents. |
-| **Spike control** | e.g. 20/sec, queuing enabled | Absorbs the 10th-of-the-month burst rather than rejecting it. Different intent from rate limiting: spike control smooths, rate limiting enforces a contract. |
+| **Spike control** | e.g. 20/sec, queuing enabled — **production only**, see below | Absorbs the 10th-of-the-month burst rather than rejecting it. Different intent from rate limiting: spike control smooths, rate limiting enforces a contract. |
 | **HTTP caching** | On `GET /supply-points/{pdr}/eligibility`, short TTL | The regulatory calendar changes once a day at most, and every portal form load hits it. |
 
 > **The JWT policy's Client ID Expression defaults to the wrong claim for
@@ -486,6 +486,32 @@ health check.
 > Enforcement policy is usually unnecessary — and would conflict with a suite
 > that authenticates with a bearer token alone, since that policy expects
 > `client_id`/`client_secret` headers.
+
+> **Spike control and rate limiting cancel each other out, and the guide used
+> to recommend both.** Rate limiting refuses traffic above its limit with 429.
+> Spike control, with queuing enabled, does not refuse anything — it holds
+> requests that would exceed the threshold and retries them until capacity
+> frees. So the overflow that rate limiting would have rejected is instead
+> delayed and then served.
+>
+> Measured on a dev instance limited to 30 requests per minute, with both
+> policies applied: 45 sequential requests all returned **200**, while the
+> response headers reported `x-ratelimit-limit: 30` and a partly consumed
+> quota. Nothing was throttled. Remove spike control and the same burst
+> produces 429s immediately.
+>
+> That is spike control working exactly as intended — absorbing a burst is
+> the entire point. But it makes the rate limit unprovable, and a burst is
+> the only way to prove one. `GatewaySecurityIT.rateLimitIsEnforced` and its
+> Karate counterpart both fail with both policies on, and the failure looks
+> like a missing rate-limit policy rather than an interaction between two
+> present ones.
+>
+> **Apply spike control to production only.** Production is where absorbing a
+> deadline-day burst matters; dev and test are where you prove the limit
+> exists. If you want it everywhere, set its Queuing Limit to 0 so it rejects
+> rather than queues — but that makes it a second rate limiter and discards
+> the reason to have it.
 
 Set the **test** instance's rate limit deliberately low — say 20 requests per
 10 seconds. Step 14 explains why.
@@ -920,6 +946,20 @@ production-grade limit from a CI runner measures the runner, not the gateway. A
 low limit proves the *mechanism* is wired up. Capacity is a separate question,
 answered in step 15.
 
+**Do not apply spike control to an environment where this runs.** With queuing
+enabled it holds requests that would exceed the limit and retries them rather
+than refusing them, so the burst is smoothed into a series of delayed 200s and
+no 429 ever appears. Measured on dev at 30 requests per minute: 45 sequential
+requests all returned 200 with both policies on, and 429s appeared immediately
+once spike control was removed. See the note in 8.3.
+
+**The throttling scenarios must also run last.** They deliberately exhaust the
+quota for the whole window, and the limit is keyed per client — so anything
+ordered after them gets 429 where it expects 200 and fails for reasons
+unrelated to what it tests. Karate executes scenarios in file order, so their
+position in `api-gateway-policies.feature` is load-bearing rather than
+cosmetic.
+
 ### 14.5 Writes never touch production
 
 Enforced in three places, because one is not enough:
@@ -1003,7 +1043,10 @@ finding.
 | `Cannot create embedded container` / `401` on `com.mulesoft.licm:licm` | No Mule EE runtime entitlement | MUnit needs a licensed EE runtime from MuleSoft's private Nexus, which Exchange credentials do not cover. Run the suites in Anypoint Studio; pass `-DskipMunitTests` when deploying. |
 | `403` on `deploy-prod` only | Connected App missing Production scope | Step 2.3 — Runtime Manager scopes need every environment ticked |
 | CI verify jobs fail on first run | `API_BASE_URL_*` not set | You skipped step 10. Deploy by hand, capture the URL, then set the secret. |
-| Rate-limit test finds no 429 | Policy absent, or threshold above what CI can reach | Step 8.3 — add SLA rate limiting and set the QA tier low |
+| Rate-limit test finds no 429 | Policy absent, threshold above what CI can reach, **or spike control is queuing the overflow** | Step 8.3. Check whether spike control is applied: with queuing enabled it retries requests instead of refusing them, and no 429 is ever produced. It belongs on production only. |
+| Rate-limit test finds no 429, and rate limiting *is* applied | SLA-based rate limiting cannot identify the client | SLA-based needs a client id **and secret** from the request; a bearer token carries no secret, so it rejects everything with 401. Use the plain Rate Limiting policy with `Identifier` set to the token's client-id claim. |
+| Scenarios after the rate-limit burst return 429 | The burst exhausted the quota for the window | Order the throttling scenarios last. The limit is keyed per client, so everything after them shares the exhausted quota. |
+| Valid token refused `403 {"error": "Authentication denied."}` | The JWT policy's Client ID Expression does not match the provider's claim | It defaults to `#[vars.claimSet.client_id]`, which Auth0 does not issue — Auth0 uses `azp`. Decode a real token and use the claim that carries the client id. |
 | Karate: connection refused right after deploy | CloudHub reports complete before the replica serves | The workflow's wait loop handles this; locally, allow 60–90s |
 | Newman: `client_secret` undefined | Env file ships empty on purpose | Pass `--env-var "client_secret=$SECRET"` |
 | Coverage gate fails on a fresh clone | Threshold above current coverage | Lower it in `pom.xml`, ratchet up as tests are added |
