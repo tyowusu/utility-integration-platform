@@ -36,7 +36,7 @@ TOKEN_URL_DEV="https://dev-y07kpoe8c074nk6q.us.auth0.com/oauth/token"
 #   Runtime Manager (test env) -> the app            -> public URL
 #
 ENV_CLIENT_ID_TEST="${ENV_CLIENT_ID_TEST:-}"
-API_INSTANCE_ID_TEST="${API_INSTANCE_ID_TEST:-}"
+API_INSTANCE_ID_TEST="${API_INSTANCE_ID_TEST:-21117830}"
 API_BASE_URL_TEST="${API_BASE_URL_TEST:-}"
 # Same Auth0 tenant as dev today. When test gets its own audience (see
 # API_AUDIENCE_TEST), this stays the same URL — the audience differs, the

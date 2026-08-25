@@ -53,7 +53,7 @@ case "${ENV_NAME}" in
     ;;
   test)
     ENV_CLIENT_ID="${TEST_ENV_CLIENT_ID:?set TEST_ENV_CLIENT_ID (Access Management -> Environments -> test)}"
-    API_ID="${TEST_API_ID:?set TEST_API_ID (the test API Manager instance id)}"
+    API_ID="${TEST_API_ID:-21117830}"
     ENV_SECRET_ITEM="uip-test-env-secret"
     SECURE_KEY_ITEM="uip-test-secure-key"
     ;;

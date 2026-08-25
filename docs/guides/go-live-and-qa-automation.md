@@ -481,6 +481,23 @@ health check.
 > Client ID Expression:  #[vars.claimSet.azp]
 > ```
 >
+> **The audience field is the same trap wearing different clothes.** Whatever
+> your policy version calls it — *Supported Audiences*, *Audience Claim
+> Values* — it is compared literally against the token's `aud`, and a
+> mismatch produces the same uninformative 401 as a bad signature. Do not
+> type what you think you registered; decode a token and read `aud` out of it.
+>
+> **Give each environment its own audience.** Sharing one across dev, test and
+> prod means a token minted for dev is cryptographically valid in prod — same
+> tenant, same signing key, same `aud` — and the *only* thing standing between
+> them is an API Manager contract. That places environment isolation entirely
+> on the contract layer, where a single mis-approved client application
+> silently spans environments. Registering a separate API per environment in
+> the IdP (`switching-experience-api`, `-test`, `-prod`) moves the check into
+> the token itself, where a mismatch is refused before contracts are consulted.
+> The suite already supports this: `api.audience` is a system property, fed in
+> CI from the `API_AUDIENCE_<ENV>` repository variables.
+>
 > Note also that this policy performs contract validation itself, via
 > **Skip Client Id Validation** and the expression above. A separate Client ID
 > Enforcement policy is usually unnecessary — and would conflict with a suite
