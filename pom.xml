@@ -27,7 +27,13 @@
     </description>
 
     <properties>
-        <app.runtime>4.6.0</app.runtime>
+        <!--
+          Tagged, not bare. A bare 4.6.0 is resolved by the platform to
+          4.6.0:42-java8 and the application runs on Java 8. See the comment
+          on <muleVersion> below — this property is the only thing that
+          decides the Java version, despite appearances.
+        -->
+        <app.runtime>4.6.0:42-java17</app.runtime>
         <mule.maven.plugin.version>4.10.1</mule.maven.plugin.version>
         <munit.version>3.3.2</munit.version>
         <maven.compiler.source>17</maven.compiler.source>
@@ -72,6 +78,29 @@
                         <provider>MC</provider>
                         <environment>${deploy.env}</environment>
                         <target>${ch2.target}</target>
+                        <!--
+                          This is what selects the Java version, and nothing
+                          else does. A bare <muleVersion>4.6.0</muleVersion>
+                          is sent without a tag; the platform resolves it to
+                          4.6.0:42-java8 — a tag the shared space no longer
+                          even offers. Query
+                            /runtimefabric/api/organizations/{org}/targets
+                          and 4.6.0 lists exactly one tag: 42-java17.
+
+                          The obvious-looking control does NOT work. A
+                          <runtime><java>17</java></runtime> block inside
+                          deploymentSettings is accepted in full, matches the
+                          plugin's own model class, appears in the deployment
+                          request — and is ignored. So is an explicit
+                          <runtime><version>4.6.0:42-java17</version>. Both
+                          were tried against test and both left the app on
+                          Java 8. Only the tag here changes it.
+
+                          Nothing warns you. The deployment succeeds, the app
+                          reports RUNNING, and the only evidence is
+                          runtime.version in the deployment record or a
+                          [?:1.8.0_392] frame in a stack trace.
+                        -->
                         <muleVersion>${app.runtime}</muleVersion>
                         <applicationName>${deploy.app.name}</applicationName>
                         <connectedAppClientId>${connectedApp.clientId}</connectedAppClientId>
@@ -126,17 +155,6 @@
                                 </inbound>
                             </http>
 
-                            <!--
-                              Pin the Java version. muleVersion alone selects
-                              a runtime tag, and the default for 4.6.0 is
-                              java8 — on which this application, compiled for
-                              17 and declaring javaSpecificationVersions
-                              ["17"], cannot start. The failure surfaces only
-                              as a failed readiness probe.
-                            -->
-                            <runtime>
-                                <java>17</java>
-                            </runtime>
                         </deploymentSettings>
 
                         <!--
