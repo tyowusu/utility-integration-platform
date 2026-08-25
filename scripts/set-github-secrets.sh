@@ -83,6 +83,8 @@ set_from_keychain ANYPOINT_PLATFORM_CLIENT_SECRET_DEV  uip-env-secret
 set_from_keychain MULE_SECURE_KEY_DEV                  uip-secure-key
 set_from_keychain API_CLIENT_ID                        uip-qa-client-id
 set_from_keychain API_CLIENT_SECRET                    uip-qa-client-secret
+set_from_keychain ANYPOINT_PLATFORM_CLIENT_SECRET_TEST  uip-test-env-secret
+set_from_keychain MULE_SECURE_KEY_TEST                  uip-test-secure-key
 
 # MUnit runs locally in Anypoint Studio against its bundled licensed runtime.
 # In CI it is skipped unless MULESOFT_NEXUS_USERNAME is set, because the EE
@@ -102,10 +104,11 @@ Not set, and why:
       for the wrong reason — it is not a registered client at all, so the test
       passes without proving contract enforcement.
 
-  *_TEST and *_PROD
-      Those environments have no API instance, no client provider association
-      and no deployment yet. cd-deploy.yml promotes dev -> test -> prod, so it
-      will fail at deploy-test until they exist.
+  *_PROD
+      Production has no API instance, no client provider association and no
+      deployment yet. cd-deploy.yml promotes dev -> test -> prod, so it will
+      fail at deploy-prod until they exist. Test is deployed and its secrets
+      are set above.
 
   MULESOFT_NEXUS_USERNAME / _PASSWORD
       A paid MuleSoft support entitlement. Absent, ci-build.yml skips MUnit
