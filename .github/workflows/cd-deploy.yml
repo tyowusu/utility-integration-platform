@@ -297,9 +297,17 @@ jobs:
     # switching deployment transmits real requests to a regulated counterparty
     # under the Seller's operator code; that warrants a human in the loop, and
     # around the 10th of the month it warrants a deployment window too.
+    # No url: here. The secrets context is not available in environment.url —
+    # only github, inputs, vars, needs and steps are — and referencing it
+    # makes the whole workflow file invalid, not just this job. GitHub reports
+    # that as "This run likely failed because of a workflow file issue" with
+    # no jobs and no annotation naming the line, so it is worth knowing.
+    #
+    # Use vars.API_BASE_URL_PROD (a repository *variable*, not a secret) if the
+    # deployment URL is wanted on the environment card. A public URL is not a
+    # credential, so a variable is the right home for it anyway.
     environment:
       name: production
-      url: ${{ secrets.API_BASE_URL_PROD }}
 
     steps:
       - uses: actions/checkout@v4
