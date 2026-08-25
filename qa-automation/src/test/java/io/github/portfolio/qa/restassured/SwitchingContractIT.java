@@ -8,6 +8,7 @@ import io.restassured.http.ContentType;
 import io.restassured.specification.RequestSpecification;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -81,6 +82,10 @@ class SwitchingContractIT {
         return "9" + millis.substring(millis.length() - 13);
     }
 
+    // Reaches SII through the application, so it cannot pass until a
+    // stand-in exists. Tagged rather than deleted or weakened: the
+    // assertion is correct, the environment cannot satisfy it yet.
+    @Tag("requires-downstream")
     @Test
     @DisplayName("202 response conforms to the SwitchingAccepted schema")
     void acceptedResponseMatchesSchema() {
@@ -132,6 +137,10 @@ class SwitchingContractIT {
                 .body("error.message", not(equalTo("An unexpected error occurred.")));
     }
 
+    // Reaches SII through the application, so it cannot pass until a
+    // stand-in exists. Tagged rather than deleted or weakened: the
+    // assertion is correct, the environment cannot satisfy it yet.
+    @Tag("requires-downstream")
     @Test
     @DisplayName("404 response conforms to the Error schema")
     void notFoundResponseMatchesSchema() {

@@ -115,19 +115,19 @@
         <http:request-connection protocol="HTTPS"
                                  host="${sii.host}"
                                  port="${sii.port}">
+            <reconnection failsDeployment="false">
+                <reconnect frequency="10000" count="3" />
+            </reconnection>
             <tls:context>
+                <tls:trust-store path="${tls.truststore.path}"
+                                 password="${secure::tls.truststore.password}"
+                                 type="jks" />
                 <tls:key-store type="jks"
                                path="${tls.keystore.path}"
                                alias="${sii.client.cert.alias}"
                                keyPassword="${secure::tls.keystore.keyPassword}"
                                password="${secure::tls.keystore.password}" />
-                <tls:trust-store path="${tls.truststore.path}"
-                                 password="${secure::tls.truststore.password}"
-                                 type="jks" />
             </tls:context>
-            <reconnection failsDeployment="false">
-                <reconnect frequency="10000" count="3" />
-            </reconnection>
         </http:request-connection>
     </http:request-config>
 
@@ -151,14 +151,14 @@
         <http:request-connection protocol="HTTPS"
                                  host="${billing.host}"
                                  port="${billing.port}">
+            <reconnection failsDeployment="false">
+                <reconnect frequency="5000" count="3" />
+            </reconnection>
             <tls:context>
                 <tls:trust-store path="${tls.truststore.path}"
                                  password="${secure::tls.truststore.password}"
                                  type="jks" />
             </tls:context>
-            <reconnection failsDeployment="false">
-                <reconnect frequency="5000" count="3" />
-            </reconnection>
         </http:request-connection>
     </http:request-config>
 

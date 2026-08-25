@@ -63,20 +63,33 @@ jobs:
   resolve:
     name: Resolve target
     runs-on: ubuntu-latest
+    # base_url and token_url are deliberately NOT outputs. GitHub redacts
+    # secrets from job outputs, so a secret read here and passed through
+    # $GITHUB_OUTPUT arrives downstream as an empty string — silently. No
+    # error, no annotation; the consuming job runs curl against "" and fails
+    # several steps later parsing an empty response as JSON. Each job resolves
+    # them from `secrets` itself, below, where they are available in full.
+    # `audience` survives because it comes from `vars`, not `secrets`.
     outputs:
-      base_url: ${{ steps.env.outputs.base_url }}
-      token_url: ${{ steps.env.outputs.token_url }}
+      audience: ${{ steps.env.outputs.audience }}
     steps:
       - id: env
         run: |
+          # Which API the token is issued for. Auth0 requires it on a
+          # client-credentials grant against a custom API; omitting it yields
+          # a token for the provider's own management API, which the gateway
+          # then rejects on aud — a 401 that reads as bad credentials.
+          #
+          # A repository *variable*, not a secret: an audience is an
+          # identifier, not a credential. Set API_AUDIENCE_<ENV> to give each
+          # environment its own, so a dev token is refused by test on aud
+          # rather than relying solely on API Manager contracts.
           case "${{ inputs.environment }}" in
-            dev)  echo "base_url=${{ secrets.API_BASE_URL_DEV }}"  >> "$GITHUB_OUTPUT"
-                  echo "token_url=${{ secrets.TOKEN_URL_DEV }}"    >> "$GITHUB_OUTPUT" ;;
-            test) echo "base_url=${{ secrets.API_BASE_URL_TEST }}" >> "$GITHUB_OUTPUT"
-                  echo "token_url=${{ secrets.TOKEN_URL_TEST }}"   >> "$GITHUB_OUTPUT" ;;
-            prod) echo "base_url=${{ secrets.API_BASE_URL_PROD }}" >> "$GITHUB_OUTPUT"
-                  echo "token_url=${{ secrets.TOKEN_URL_PROD }}"   >> "$GITHUB_OUTPUT" ;;
+            dev)  AUD="${{ vars.API_AUDIENCE_DEV }}"  ;;
+            test) AUD="${{ vars.API_AUDIENCE_TEST }}" ;;
+            prod) AUD="${{ vars.API_AUDIENCE_PROD }}" ;;
           esac
+          echo "audience=${AUD:-switching-experience-api}" >> "$GITHUB_OUTPUT"
 
       # A belt-and-braces guard. run_writes is already false for prod in the
       # calling workflow, but a manual dispatch could set it, and the cost of
@@ -94,6 +107,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    env:
+      # Resolved per job, not inherited from `resolve` — see the note on that
+      # job's outputs. A secret cannot travel through a job output.
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -109,10 +128,11 @@ jobs:
       - name: Obtain access token
         id: token
         run: |
-          TOKEN=$(curl -sk -X POST "${{ needs.resolve.outputs.token_url }}" \
+          TOKEN=$(curl -sk -X POST "${TOKEN_URL}" \
             -d "grant_type=client_credentials" \
             -d "client_id=${{ secrets.API_CLIENT_ID }}" \
             -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            -d "audience=${{ needs.resolve.outputs.audience }}" \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
@@ -123,10 +143,11 @@ jobs:
           mvn --batch-mode --no-transfer-progress test \
             -Dtest=SwitchingFunctionalTest#smoke \
             -Dkarate.env=${{ inputs.environment }} \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
-            -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
-            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }}
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }}
 
       - name: Full functional suite (writes)
         if: inputs.run_writes
@@ -135,34 +156,84 @@ jobs:
           mvn --batch-mode --no-transfer-progress test \
             -Dtest=SwitchingFunctionalTest#functional \
             -Dkarate.env=${{ inputs.environment }} \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
-            -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
-            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }}
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }}
 
+      # The gateway suite's throttling scenario deliberately bursts past the
+      # rate limit. The limit is per client per minute and every suite here
+      # authenticates as the same client, so without a cooldown the burst
+      # poisons whatever runs next, and whatever ran before eats the quota
+      # this suite needs for its own 200-expecting scenarios.
+      #
+      # This is not hypothetical: run 32868014923 had the gateway suite at
+      # 8/11 and every REST Assured test failing with "Expected status code
+      # <200> but was <429>" — none of which had anything to do with the
+      # gateway or the contracts.
+      - name: Wait out the rate-limit window
+        if: ${{ !cancelled() && inputs.run_gateway_policies }}
+        run: sleep 65
+
+      # `!cancelled()`, because a step without it is skipped as soon as an earlier
+      # step fails — and the full functional suite fails on any environment
+      # whose Salesforce/SII/billing mocks do not resolve. That silently took
+      # the gateway suite with it: the run reported "Karate failed" while the
+      # single most valuable check in the pipeline, the one proving
+      # autodiscovery bound and the policies are enforcing, had never executed.
+      #
+      # These suites are independent. Nothing about a 504 from an absent
+      # downstream mock says anything about whether the gateway is governing
+      # traffic, so one must not suppress the other.
       - name: Gateway policy suite
-        if: inputs.run_gateway_policies
+        if: ${{ !cancelled() && inputs.run_gateway_policies }}
         working-directory: qa-automation
         run: |
           mvn --batch-mode --no-transfer-progress test \
             -Dtest=SwitchingFunctionalTest#gateway \
             -Dkarate.env=${{ inputs.environment }} \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
-            -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
             -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }} \
             -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
             -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
 
+      # Same reason: the burst above just exhausted the window.
+      - name: Wait out the rate-limit window again
+        if: ${{ !cancelled() && inputs.run_writes }}
+        run: sleep 65
+
       - name: Contract and security integration tests
-        if: inputs.run_writes
+        if: ${{ !cancelled() && inputs.run_writes }}
         working-directory: qa-automation
         # Failsafe goals invoked directly rather than via `verify`, so the
         # Karate suites above are not re-run as a side effect of the lifecycle.
+        #
+        # The two IT classes are invoked separately with a cooldown between
+        # them. Together they issue more than the rate limit allows inside one
+        # minute — GatewaySecurityIT passes 8/8 and SwitchingContractIT then
+        # fails 5/5 on 429, which reads as a contract regression and is
+        # nothing of the sort. Splitting the invocation keeps each class inside
+        # one window. A step-level cooldown cannot help here: both classes run
+        # inside a single Failsafe invocation.
         run: |
           mvn --batch-mode --no-transfer-progress \
             test-compile failsafe:integration-test failsafe:verify \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
+            -Dit.test=GatewaySecurityIT \
+            -DexcludedGroups=requires-downstream \
+            -Dapi.base.url=${BASE_URL} \
+            -Daccess.token=${{ steps.token.outputs.token }}
+
+          sleep 65
+
+          mvn --batch-mode --no-transfer-progress \
+            failsafe:integration-test failsafe:verify \
+            -Dit.test=SwitchingContractIT \
+            -DexcludedGroups=requires-downstream \
+            -Dapi.base.url=${BASE_URL} \
             -Daccess.token=${{ steps.token.outputs.token }}
 
       - name: Publish results
@@ -181,11 +252,137 @@ jobs:
           path: qa-automation/target/karate-reports/
           retention-days: 14
 
+  # ===========================================================================
+  # SUITES THAT CANNOT PASS YET — INFORMATIONAL, NEVER A GATE
+  # ===========================================================================
+  # These scenarios cover submission, status and duplicate detection: the core
+  # of the regulated flow, and the most valuable tests in the repository. They
+  # fail with 504 CONNECTIVITY because SII, Salesforce, billing and the
+  # identity provider are non-resolving placeholders in every environment we
+  # have — SII has no public sandbox at all.
+  #
+  # Deliberately a separate job with continue-on-error rather than a
+  # `|| true` inside the blocking suite. The distinction matters: the job
+  # name and its published check state plainly that this coverage is absent.
+  # Folding them into the main suite would leave a permanently red check that
+  # everyone learns to ignore; suppressing them silently would leave a green
+  # check with a hole in it. Both are worse than saying so.
+  #
+  # When the mocks exist, delete this job and the ~@requires-downstream filter
+  # on the suite above.
+  functional-mocks:
+    name: Suites needing downstream mocks (informational)
+    needs: [resolve, functional]
+    if: ${{ !cancelled() && inputs.run_writes }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Obtain access token
+        id: token
+        run: |
+          TOKEN=$(curl -sk -X POST "${TOKEN_URL}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=${{ secrets.API_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            -d "audience=${{ needs.resolve.outputs.audience }}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Scenarios requiring downstream stand-ins
+        working-directory: qa-automation
+        run: |
+          echo "::warning title=Coverage gap::Submission, status and duplicate-detection scenarios cannot pass until SII, Salesforce, billing and the identity provider have stand-ins. The hosts in ${{ inputs.environment }}.yaml (sii-mock-*.internal, salesforce-mock-*.internal, billing-mock-*.internal, identity-mock-*.internal) do not resolve, so these return 504 CONNECTIVITY regardless of whether the code is correct."
+          mvn --batch-mode --no-transfer-progress test \
+            -Dtest=SwitchingFunctionalTest#mocksRequired \
+            -Dkarate.env=${{ inputs.environment }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
+            -Dclient.id=${{ secrets.API_CLIENT_ID }} \
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }}
+
+      - name: Contract tests requiring downstream stand-ins
+        if: always()
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress \
+            test-compile failsafe:integration-test failsafe:verify \
+            -Dgroups=requires-downstream \
+            -Dapi.base.url=${BASE_URL} \
+            -Daccess.token=${{ steps.token.outputs.token }}
+
+      - name: Install Newman
+        run: npm install -g newman newman-reporter-htmlextra
+
+      # The 20 — Submit and 30 — Status folders are exactly the requests that
+      # need downstream stand-ins. Their contract-violation cases (400, 422)
+      # do pass, and move here with them — Newman selects by folder, not by
+      # request. Nothing is lost: the blocking Karate suite covers the same
+      # refusals, so this only stops them being asserted twice.
+      - name: Newman folders requiring downstream stand-ins
+        if: always()
+        working-directory: qa-automation/postman
+        run: |
+          newman run switching-api.postman_collection.json \
+            --environment env.${{ inputs.environment }}.postman_environment.json \
+            --env-var "base_url=${BASE_URL}" \
+            --env-var "token_url=${TOKEN_URL}" \
+            --env-var "audience=${{ needs.resolve.outputs.audience }}" \
+            --env-var "client_id=${{ secrets.API_CLIENT_ID }}" \
+            --env-var "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            --folder '00 — Auth' \
+            --folder '20 — Submit (writes — dev/test only)' \
+            --folder '30 — Status' \
+            --insecure \
+            --reporters cli,junit \
+            --reporter-junit-export ../../newman-mocks-results.xml
+
+      # fail_on_failure is false on purpose. The results are worth publishing —
+      # they show exactly which coverage is missing — but they must not turn a
+      # check red for an absence everyone already knows about.
+      - name: Publish results
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'qa-automation/target/surefire-reports/*.xml,qa-automation/target/failsafe-reports/*.xml,newman-mocks-results.xml'
+          check_name: 'API tests (needs mocks) — ${{ inputs.environment }}'
+          fail_on_failure: false
+
   postman:
     name: Newman collection
-    needs: resolve
+    # Serialised behind `functional`, not run alongside it. These jobs
+    # authenticate as the same client and share one rate-limit quota, so in
+    # parallel they throttle each other and fail on 429s that belong to
+    # neither suite.
+    needs: [resolve, functional-mocks]
+    # `needs` here orders the jobs; it must not also gate them. A failed need
+    # skips its dependents, and `functional` fails on any environment whose
+    # downstream mocks do not resolve — so gating on it silently stopped
+    # Newman and JMeter running at all. Order without gating.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    env:
+      # Resolved per job, not inherited from `resolve` — see the note on that
+      # job's outputs. A secret cannot travel through a job output.
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
 
     steps:
       - uses: actions/checkout@v4
@@ -201,15 +398,18 @@ jobs:
       - name: Run collection
         working-directory: qa-automation/postman
         run: |
-          FOLDERS="--folder '00 — Auth' --folder '10 — Eligibility' --folder '40 — Gateway policies'"
-          if [ "${{ inputs.run_writes }}" = "true" ]; then
-            FOLDERS="$FOLDERS --folder '20 — Submit' --folder '30 — Status'"
-          fi
+          # Newman matches --folder names EXACTLY, and a name that does not
+          # exist fails the whole run with "runtime~extractRunnableItems:
+          # Invalid entrypoint" — which names neither the folder it could not
+          # find nor the collection it looked in. These strings must stay in
+          # step with the folder names inside switching-api.postman_collection.json.
+          FOLDERS="--folder '00 — Auth' --folder '10 — Eligibility (read-only, safe for prod smoke)' --folder '40 — Gateway policies'"
 
           eval newman run switching-api.postman_collection.json \
             -e env.${{ inputs.environment }}.postman_environment.json \
-            --env-var "base_url=${{ needs.resolve.outputs.base_url }}" \
-            --env-var "token_url=${{ needs.resolve.outputs.token_url }}" \
+            --env-var "base_url=${BASE_URL}" \
+            --env-var "token_url=${TOKEN_URL}" \
+            --env-var "audience=${{ needs.resolve.outputs.audience }}" \
             --env-var "client_id=${{ secrets.API_CLIENT_ID }}" \
             --env-var "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
             $FOLDERS \
@@ -228,10 +428,18 @@ jobs:
 
   performance:
     name: JMeter peak-day profile
-    needs: resolve
-    if: inputs.run_performance
+    # Serialised for the same reason, and more so: this job exists to
+    # generate load, which is precisely what exhausts everyone else's quota.
+    needs: [resolve, postman]
+    if: ${{ !cancelled() && inputs.run_performance }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
+    env:
+      # Resolved per job, not inherited from `resolve` — see the note on that
+      # job's outputs. A secret cannot travel through a job output.
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
 
     steps:
       - uses: actions/checkout@v4
@@ -245,10 +453,11 @@ jobs:
       - name: Obtain access token
         id: token
         run: |
-          TOKEN=$(curl -sk -X POST "${{ needs.resolve.outputs.token_url }}" \
+          TOKEN=$(curl -sk -X POST "${TOKEN_URL}" \
             -d "grant_type=client_credentials" \
             -d "client_id=${{ secrets.API_CLIENT_ID }}" \
             -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            -d "audience=${{ needs.resolve.outputs.audience }}" \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
@@ -262,7 +471,7 @@ jobs:
         working-directory: qa-automation
         run: |
           mvn --batch-mode --no-transfer-progress verify -Pperf -DskipTests \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
+            -Dapi.base.url=${BASE_URL} \
             -Daccess.token=${{ steps.token.outputs.token }}
 
       - name: Upload JMeter report

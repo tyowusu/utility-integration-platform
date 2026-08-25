@@ -40,6 +40,13 @@ concurrency:
 permissions:
   contents: read
   id-token: write
+  # Required by the reusable api-tests workflow, which publishes JUnit
+  # results as checks. Without these it logs "Failed to create checks using
+  # the provided token / Resource not accessible by integration" and the test
+  # results never appear on the PR — the job's own red or green is all you
+  # get. A called workflow cannot request permissions the caller lacks.
+  checks: write
+  pull-requests: write
 
 env:
   JAVA_VERSION: '17'
@@ -79,6 +86,11 @@ jobs:
                 "id": "anypoint-exchange-v3",
                 "username": "~~~Client~~~",
                 "password": "${{ secrets.ANYPOINT_CONNECTED_APP_CLIENT_ID }}~?~${{ secrets.ANYPOINT_CONNECTED_APP_CLIENT_SECRET }}"
+              },
+              {
+                "id": "mulesoft-private",
+                "username": "${{ secrets.MULESOFT_NEXUS_USERNAME || 'not-configured' }}",
+                "password": "${{ secrets.MULESOFT_NEXUS_PASSWORD || 'not-configured' }}"
               }
             ]
 
@@ -94,16 +106,53 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building version ${VERSION}"
 
+      # -----------------------------------------------------------------
+      # `verify` runs MUnit, MUnit needs a Mule EE runtime, and that resolves
+      # com.mulesoft.licm:licm from MuleSoft's private Nexus — which answers
+      # 401 without a paid support entitlement. ci-build.yml has handled this
+      # since the start; this job did not, so the very first cd-deploy run
+      # died here having deployed nothing.
+      #
+      # The failure is worth recognising by shape: the reported error is
+      # "Could not find embedded container bom artifact", several frames above
+      # the 401 that actually caused it, and it repeats once per runtime
+      # version the resolver tries.
+      # -----------------------------------------------------------------
+      - name: Check for Mule EE runtime entitlement
+        id: ee
+        run: |
+          if [ -n "${{ secrets.MULESOFT_NEXUS_USERNAME }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and test
+        if: steps.ee.outputs.available == 'true'
         run: |
           mvn --batch-mode --no-transfer-progress clean verify \
+            -Dmule.env=local \
+            -Dmule.secure.key=${{ secrets.MULE_SECURE_KEY_LOCAL || 'localdevkey12345' }}
+
+      - name: Build without MUnit — no Mule EE runtime entitlement
+        if: steps.ee.outputs.available != 'true'
+        run: |
+          echo "::warning title=MUnit skipped::MULESOFT_NEXUS_USERNAME is not set, so a Mule EE runtime cannot be downloaded and MUnit cannot run before this deployment. The artifact is still compiled and packaged, and every Mule XML config and DataWeave script is still validated. The deployed environments are verified by the Karate suites in the verify-* jobs."
+          mvn --batch-mode --no-transfer-progress clean package \
+            -DskipMunitTests \
             -Dmule.env=local \
             -Dmule.secure.key=${{ secrets.MULE_SECURE_KEY_LOCAL || 'localdevkey12345' }}
 
       # Publishing to Exchange makes the release an immutable, versioned,
       # discoverable artifact. A deployment can then be traced to a specific
       # Exchange version rather than to "whatever main looked like that day".
+      # Only on push/tag. Exchange versions are immutable, so republishing a
+      # version that already exists fails the build — which would make every
+      # manual re-dispatch fail at this step until someone bumped the pom.
+      # A dispatch is a redeploy, not a release; the jar is still uploaded as
+      # a run artifact below and the deploy jobs consume that, not Exchange.
       - name: Publish to Anypoint Exchange
+        if: github.event_name == 'push'
         run: |
           mvn --batch-mode --no-transfer-progress deploy -DskipTests \
             -Danypoint.orgId=${{ secrets.ANYPOINT_ORG_ID }}
@@ -122,7 +171,7 @@ jobs:
     needs: build
     if: github.event_name == 'push' || inputs.target_environment == 'dev'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     environment:
       name: dev
       url: ${{ steps.deploy.outputs.app_url }}
@@ -202,6 +251,13 @@ jobs:
   verify-dev:
     name: QA suite against dev
     needs: deploy-dev
+    # Explicit condition, even though `needs` alone looks sufficient. Skip
+    # state propagates down the dependency chain: deploy-dev only runs
+    # because its own gate lets it past a skipped upstream job, and a job
+    # resurrected that way does not un-skip its dependents. Without this,
+    # deploy-dev deployed and then nothing verified it — the run
+    # reported success with the verification silently skipped.
+    if: ${{ !cancelled() && needs.deploy-dev.result == 'success' }}
     uses: ./.github/workflows/api-tests.yml
     with:
       environment: dev
@@ -215,9 +271,24 @@ jobs:
   deploy-test:
     name: Deploy to test
     needs: [build, verify-dev]
-    if: github.event_name == 'push' || inputs.target_environment == 'test'
+    # A skipped `needs` job skips this one too, which is what makes the naive
+    # form of this condition unusable. Dispatching with target_environment=test
+    # skips deploy-dev (correctly — we are not deploying dev), that skips
+    # verify-dev, and a skipped verify-dev then skips deploy-test. The run
+    # completes "successfully" having deployed nothing at all.
+    #
+    # So the gate is expressed on job *results* rather than on `needs` alone:
+    # a promotion from a push must have a green verify-dev behind it, while a
+    # direct dispatch at test is allowed to proceed without one.
+    if: >-
+      !cancelled()
+      && needs.build.result == 'success'
+      && (
+        (github.event_name == 'push' && needs.verify-dev.result == 'success')
+        || inputs.target_environment == 'test'
+      )
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     environment:
       name: test
 
@@ -276,6 +347,13 @@ jobs:
   verify-test:
     name: Regression + performance against test
     needs: deploy-test
+    # Explicit condition, even though `needs` alone looks sufficient. Skip
+    # state propagates down the dependency chain: deploy-test only runs
+    # because its own gate lets it past a skipped upstream job, and a job
+    # resurrected that way does not un-skip its dependents. Without this,
+    # deploy-test deployed and then nothing verified it — the run
+    # reported success with the verification silently skipped.
+    if: ${{ !cancelled() && needs.deploy-test.result == 'success' }}
     uses: ./.github/workflows/api-tests.yml
     with:
       environment: test
@@ -290,16 +368,33 @@ jobs:
   deploy-prod:
     name: Deploy to production
     needs: [build, verify-test]
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.target_environment == 'prod'
+    # Same skipped-dependency trap as deploy-test above. A tag push must carry
+    # a green verify-test; a deliberate dispatch at prod may proceed without
+    # one, and is gated by the environment's required reviewers instead.
+    if: >-
+      !cancelled()
+      && needs.build.result == 'success'
+      && (
+        (startsWith(github.ref, 'refs/tags/v') && needs.verify-test.result == 'success')
+        || inputs.target_environment == 'prod'
+      )
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     # Configure this GitHub Environment with required reviewers. A production
     # switching deployment transmits real requests to a regulated counterparty
     # under the Seller's operator code; that warrants a human in the loop, and
     # around the 10th of the month it warrants a deployment window too.
+    # No url: here. The secrets context is not available in environment.url —
+    # only github, inputs, vars, needs and steps are — and referencing it
+    # makes the whole workflow file invalid, not just this job. GitHub reports
+    # that as "This run likely failed because of a workflow file issue" with
+    # no jobs and no annotation naming the line, so it is worth knowing.
+    #
+    # Use vars.API_BASE_URL_PROD (a repository *variable*, not a secret) if the
+    # deployment URL is wanted on the environment card. A public URL is not a
+    # credential, so a variable is the right home for it anyway.
     environment:
       name: production
-      url: ${{ secrets.API_BASE_URL_PROD }}
 
     steps:
       - uses: actions/checkout@v4
@@ -381,6 +476,13 @@ jobs:
   verify-prod:
     name: Production smoke
     needs: deploy-prod
+    # Explicit condition, even though `needs` alone looks sufficient. Skip
+    # state propagates down the dependency chain: deploy-prod only runs
+    # because its own gate lets it past a skipped upstream job, and a job
+    # resurrected that way does not un-skip its dependents. Without this,
+    # deploy-prod deployed and then nothing verified it — the run
+    # reported success with the verification silently skipped.
+    if: ${{ !cancelled() && needs.deploy-prod.result == 'success' }}
     uses: ./.github/workflows/api-tests.yml
     with:
       environment: prod

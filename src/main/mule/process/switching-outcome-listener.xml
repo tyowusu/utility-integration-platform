@@ -40,11 +40,11 @@
         <anypoint-mq:subscriber doc:name="Subscribe: switching outcomes"
                                 config-ref="Anypoint_MQ_Config"
                                 destination="${mq.queue.switching_outcome}"
-                                acknowledgementMode="MANUAL">
+                                acknowledgementMode="MANUAL"
+                                acknowledgementTimeout="300"
+                                acknowledgementTimeoutUnit="SECONDS">
             <anypoint-mq:subscriber-type>
-                <anypoint-mq:prefetch maxLocalMessages="10"
-                                      acknowledgementTimeout="300"
-                                      acknowledgementTimeoutUnit="SECONDS" />
+                <anypoint-mq:prefetch maxLocalMessages="10" />
             </anypoint-mq:subscriber-type>
         </anypoint-mq:subscriber>
 
@@ -118,7 +118,7 @@
                                     output application/json
                                     ---
                                     {
-                                        type: "SWITCHING_CONFIRMED",
+                                        "type": "SWITCHING_CONFIRMED",
                                         accountId: vars.correlation.crmAccountId,
                                         pdr: vars.outcome.pdr,
                                         effectiveDate: vars.outcome.effectiveDate,
@@ -140,7 +140,7 @@
                                     output application/json
                                     ---
                                     {
-                                        type: "SWITCHING_REJECTED",
+                                        "type": "SWITCHING_REJECTED",
                                         accountId: vars.correlation.crmAccountId,
                                         pdr: vars.outcome.pdr,
                                         effectiveDate: vars.outcome.effectiveDate,

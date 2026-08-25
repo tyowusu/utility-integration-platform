@@ -59,8 +59,8 @@
                                      expression="#[%dw 2.0
                                         output application/java
                                         ---
-                                        (payload.availableDates default [])
-                                            every ((d) -> ((d.effectiveDate as Date) as String {format: 'd'}) == '1')]"
+                                        sizeOf((payload.availableDates default [])
+                                            filter ((d) -> ((d.effectiveDate as Date) as String {format: 'd'}) != '1')) == 0]"
                                      is="#[MunitTools::equalTo(true)]"
                                      message="Delibera 77/2018/R/com permits only first-of-month effective dates. Offering any other date guarantees a downstream rejection." />
 
@@ -68,8 +68,8 @@
                                      expression="#[%dw 2.0
                                         output application/java
                                         ---
-                                        (payload.availableDates default [])
-                                            every ((d) -> (d.effectiveDate as Date) > (now() as Date))]"
+                                        sizeOf((payload.availableDates default [])
+                                            filter ((d) -> (d.effectiveDate as Date) &lt;= (now() as Date))) == 0]"
                                      is="#[MunitTools::equalTo(true)]" />
 
             <munit-tools:assert-that doc:name="Regulatory basis is cited"
@@ -103,8 +103,8 @@
                                      expression="#[%dw 2.0
                                         output application/java
                                         ---
-                                        (payload.availableDates default [])
-                                            every ((d) -> (d.submissionDeadline as Date) &lt; (d.effectiveDate as Date))]"
+                                        sizeOf((payload.availableDates default [])
+                                            filter ((d) -> (d.submissionDeadline as Date) &gt;= (d.effectiveDate as Date))) == 0]"
                                      is="#[MunitTools::equalTo(true)]" />
         </munit:validation>
     </munit:test>

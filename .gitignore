@@ -38,5 +38,13 @@ soapui-*.log
 .idea/
 *.iml
 
+# --- Anypoint Studio workspace metadata -----------------------------------
+.metadata/
+
+# --- Accidental nested clone of this repository ---------------------------
+# Studio's "copy projects into workspace" import can leave a full duplicate
+# checkout inside the repo. Ignored so it can never be committed by mistake.
+switching-process-api/
+
 # --- OS -------------------------------------------------------------------
 .DS_Store

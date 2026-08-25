@@ -4,9 +4,19 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 
     <modelVersion>4.0.0</modelVersion>
-    <groupId>io.github.portfolio</groupId>
+    <!--
+      Anypoint Exchange requires a published asset's groupId to be the
+      organisation UUID; anything else is rejected outright at publish time.
+      Since CloudHub 2.0 deploys *from* Exchange rather than from an uploaded
+      jar, this is not optional for a deployed application.
+
+      The cost is that this coordinate is organisation-specific: a fork
+      publishing to a different Anypoint org must change it, along with the
+      anypoint.orgId passed at build time.
+    -->
+    <groupId>c7586f41-62a9-40a2-9665-aa6c7d456e66</groupId>
     <artifactId>switching-process-api</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.4</version>
     <packaging>mule-application</packaging>
 
     <name>switching-process-api</name>
@@ -17,8 +27,14 @@
     </description>
 
     <properties>
-        <app.runtime>4.6.0</app.runtime>
-        <mule.maven.plugin.version>4.1.1</mule.maven.plugin.version>
+        <!--
+          Tagged, not bare. A bare 4.6.0 is resolved by the platform to
+          4.6.0:42-java8 and the application runs on Java 8. See the comment
+          on <muleVersion> below — this property is the only thing that
+          decides the Java version, despite appearances.
+        -->
+        <app.runtime>4.6.0:42-java17</app.runtime>
+        <mule.maven.plugin.version>4.10.1</mule.maven.plugin.version>
         <munit.version>3.3.2</munit.version>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
@@ -30,10 +46,10 @@
           same artifact is promoted across environments rather than rebuilt.
         -->
         <anypoint.uri>https://anypoint.mulesoft.com</anypoint.uri>
-        <ch2.target>Cloudhub-EU-Central-1</ch2.target>
+        <ch2.target>Cloudhub-US-East-2</ch2.target>
         <ch2.replicas>1</ch2.replicas>
         <ch2.vcores>0.1</ch2.vcores>
-        <deploy.env>Sandbox</deploy.env>
+        <deploy.env>dev</deploy.env>
         <deploy.app.name>switching-process-api-dev</deploy.app.name>
         <mule.env>local</mule.env>
     </properties>
@@ -62,29 +78,106 @@
                         <provider>MC</provider>
                         <environment>${deploy.env}</environment>
                         <target>${ch2.target}</target>
+                        <!--
+                          This is what selects the Java version, and nothing
+                          else does. A bare <muleVersion>4.6.0</muleVersion>
+                          is sent without a tag; the platform resolves it to
+                          4.6.0:42-java8 — a tag the shared space no longer
+                          even offers. Query
+                            /runtimefabric/api/organizations/{org}/targets
+                          and 4.6.0 lists exactly one tag: 42-java17.
+
+                          The obvious-looking control does NOT work. A
+                          <runtime><java>17</java></runtime> block inside
+                          deploymentSettings is accepted in full, matches the
+                          plugin's own model class, appears in the deployment
+                          request — and is ignored. So is an explicit
+                          <runtime><version>4.6.0:42-java17</version>. Both
+                          were tried against test and both left the app on
+                          Java 8. Only the tag here changes it.
+
+                          Nothing warns you. The deployment succeeds, the app
+                          reports RUNNING, and the only evidence is
+                          runtime.version in the deployment record or a
+                          [?:1.8.0_392] frame in a stack trace.
+                        -->
                         <muleVersion>${app.runtime}</muleVersion>
                         <applicationName>${deploy.app.name}</applicationName>
                         <connectedAppClientId>${connectedApp.clientId}</connectedAppClientId>
                         <connectedAppClientSecret>${connectedApp.clientSecret}</connectedAppClientSecret>
                         <connectedAppGrantType>client_credentials</connectedAppGrantType>
+                        <!--
+                          The plugin's default deployment validation window is
+                          shorter than a cold start on a trial shared space.
+                          When it expires the build fails with "Validation
+                          timed out waiting for application to start" while the
+                          application is, in fact, starting perfectly well —
+                          run 32872694403 failed here with the replica already
+                          RUNNING and serving traffic.
+                          A deploy that succeeded and a build that reports
+                          failure is the worst combination to debug, because
+                          the obvious next step is to redeploy something that
+                          is already deployed.
+                        -->
+                        <deploymentTimeout>2400000</deploymentTimeout>
                         <replicas>${ch2.replicas}</replicas>
                         <vCores>${ch2.vcores}</vCores>
 
                         <deploymentSettings>
                             <generateDefaultPublicUrl>true</generateDefaultPublicUrl>
-                            <!--
-                              Object store persistence is not optional here.
-                              The switching correlation store is what reunites
-                              an asynchronous distributor outcome with the
-                              request that produced it; losing it on replica
-                              restart orphans in-flight switches.
-                            -->
-                            <persistentObjectStore>true</persistentObjectStore>
                             <updateStrategy>rolling</updateStrategy>
-                            <forwardSslSession>true</forwardSslSession>
                             <disableAmLogForwarding>false</disableAmLogForwarding>
+
+                            <!--
+                              These MUST be nested under http/inbound. The
+                              plugin also exposes lastMileSecurity and
+                              forwardSslSession at the top level of
+                              deploymentSettings, and setting them there is
+                              accepted silently — the deployment spec then
+                              reports lastMileSecurity: true while http.inbound
+                              stays empty, and CloudHub reads the nested value.
+                              The result is a healthy application, 1/1
+                              replicas started, and a bare 502 from the
+                              ingress.
+
+                              Last-mile security matters here beyond making
+                              the listener reachable: the inbound listener is
+                              HTTPS with its own TLS context, so traffic stays
+                              encrypted to the application rather than only to
+                              the edge — the appropriate posture for a
+                              regulated integration.
+                            -->
+                            <http>
+                                <inbound>
+                                    <lastMileSecurity>true</lastMileSecurity>
+                                    <!--
+                                      forwardSslSession is deliberately absent.
+                                      It forwards the client's TLS session
+                                      details to the application, and CloudHub
+                                      rejects it on a shared space:
+                                      "ForwardSslSession is not supported for
+                                      the given deployment target". It would
+                                      need a private space.
+
+                                      Worth noting it was previously set at the
+                                      top level of deploymentSettings, where it
+                                      was accepted and silently ignored. Nested
+                                      here it is validated — which is how we
+                                      learned the top-level values were never
+                                      being read.
+                                    -->
+                                </inbound>
+                            </http>
+
                         </deploymentSettings>
 
+                        <!--
+                          Object store persistence is not optional here.
+                          The switching correlation store is what reunites
+                          an asynchronous distributor outcome with the
+                          request that produced it; losing it on replica
+                          restart orphans in-flight switches.
+                        -->
                         <integrations>
                             <services>
                                 <objectStoreV2>
@@ -96,6 +189,15 @@
                         <properties>
                             <mule.env>${mule.env}</mule.env>
                             <anypoint.platform.client_id>${autodiscovery.clientId}</anypoint.platform.client_id>
+                            <!--
+                              The API Manager instance this application binds
+                              to. Passing -Dapi.id on the command line only
+                              sets a Maven property; without forwarding it
+                              here the deployed application cannot resolve
+                              ${api.id} in the autodiscovery element and dies
+                              at startup.
+                            -->
+                            <api.id>${api.id}</api.id>
                         </properties>
 
                         <secureProperties>
@@ -229,7 +331,7 @@
         <profile>
             <id>dev</id>
             <properties>
-                <deploy.env>Sandbox</deploy.env>
+                <deploy.env>dev</deploy.env>
                 <deploy.app.name>switching-process-api-dev</deploy.app.name>
                 <mule.env>dev</mule.env>
                 <ch2.replicas>1</ch2.replicas>
@@ -239,7 +341,7 @@
         <profile>
             <id>test</id>
             <properties>
-                <deploy.env>Sandbox</deploy.env>
+                <deploy.env>test</deploy.env>
                 <deploy.app.name>switching-process-api-test</deploy.app.name>
                 <mule.env>test</mule.env>
                 <ch2.replicas>1</ch2.replicas>
@@ -249,7 +351,7 @@
         <profile>
             <id>prod</id>
             <properties>
-                <deploy.env>Production</deploy.env>
+                <deploy.env>prod</deploy.env>
                 <deploy.app.name>switching-process-api</deploy.app.name>
                 <mule.env>prod</mule.env>
                 <!--

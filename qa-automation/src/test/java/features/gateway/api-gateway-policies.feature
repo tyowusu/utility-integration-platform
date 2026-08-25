@@ -32,10 +32,17 @@ Feature: API Manager gateway policy enforcement
     Given path 'supply-points', validPdr, 'eligibility'
     # No Authorization header, no client_id/client_secret headers.
     When method get
-    Then assert responseStatus == 401 || responseStatus == 403
+    # 400 is included deliberately. A missing token is answered by the JWT
+    # validation policy with 400 {"error": "JWT Token is required."}, not the
+    # 401 an absent credential might suggest — a malformed or unsigned token
+    # does return 401. What this scenario asserts is that the gateway refused
+    # the request, and all three statuses are refusals; narrowing to 401/403
+    # would fail against correct behaviour.
+    Then assert responseStatus == 400 || responseStatus == 401 || responseStatus == 403
     # The gateway, not the application, produced this. The application's own
     # error handler always emits an object with error.correlationId; the
-    # gateway's does not. Asserting the absence tells us which layer answered.
+    # gateway's does not. Asserting the absence tells us which layer answered,
+    # and is what stops the status list above from being merely permissive.
     And match response != '#[_ != null] error.correlationId'
 
   @policy-client-id
@@ -44,7 +51,12 @@ Feature: API Manager gateway policy enforcement
     And header client_id = unapprovedClientId
     And header client_secret = unapprovedClientSecret
     When method get
-    Then assert responseStatus == 401 || responseStatus == 403
+    # 400 for the same reason as above: this request carries no bearer token,
+    # so JWT validation refuses it before contract checking is reached. The
+    # scenario still proves an unentitled caller cannot get through, which is
+    # the point — but note it does not, on its own, prove the *contract* was
+    # what refused it.
+    Then assert responseStatus == 400 || responseStatus == 401 || responseStatus == 403
 
   @policy-client-id
   Scenario: An approved client is admitted
@@ -98,42 +110,6 @@ Feature: API Manager gateway policy enforcement
     Then assert responseStatus == 401 || responseStatus == 403
 
   # ---------------------------------------------------------------------------
-  # Rate limiting / spike control
-  # ---------------------------------------------------------------------------
-  @policy-rate-limit
-  Scenario: Sustained traffic above the configured limit is throttled with 429
-    * if (!accessToken) karate.abort()
-    # The policy in the test environment is deliberately set low enough to be
-    # provable inside a CI run. Proving a production-grade limit would require
-    # generating production-grade load from a CI runner, which measures the
-    # runner rather than the gateway.
-    * def burst =
-      """
-      function() {
-        var statuses = [];
-        for (var i = 0; i < 40; i++) {
-          var r = karate.call('classpath:helpers/single-eligibility-call.feature',
-                              { baseUrl: baseUrl, pdr: validPdr, token: accessToken });
-          statuses.push(r.responseStatus);
-        }
-        return statuses;
-      }
-      """
-    * def statuses = burst()
-    * def throttled = karate.filter(statuses, function(s){ return s == 429 })
-    And assert throttled.length > 0
-    # A 429 must be an honest refusal, not a disguised failure: the client is
-    # expected to back off and retry, so anything other than 429 (a 500, say)
-    # would send the portal down a retry path that makes the overload worse.
-
-  @policy-rate-limit
-  Scenario: A throttled response advertises when to retry
-    * if (!accessToken) karate.abort()
-    * def r = karate.call('classpath:helpers/single-eligibility-call.feature',
-                          { baseUrl: baseUrl, pdr: validPdr, token: accessToken })
-    * if (r.responseStatus == 429) karate.match(r.responseHeaders['x-ratelimit-remaining'], '#notnull')
-
-  # ---------------------------------------------------------------------------
   # Transport security
   # ---------------------------------------------------------------------------
   @policy-transport
@@ -155,3 +131,47 @@ Feature: API Manager gateway policy enforcement
     And request {}
     When method delete
     Then assert responseStatus == 405 || responseStatus == 401 || responseStatus == 403
+
+  # ---------------------------------------------------------------------------
+  # Rate limiting / spike control
+  #
+  # These run LAST, and deliberately so. The burst below exhausts the quota for
+  # the whole window, and the rate limit is keyed per client — so any scenario
+  # ordered after it gets 429 where it expects 200, and fails for a reason that
+  # has nothing to do with what it is testing. Karate executes scenarios in file
+  # order, so position here is load-bearing rather than cosmetic.
+  # ---------------------------------------------------------------------------
+  @policy-rate-limit
+  Scenario: Sustained traffic above the configured limit is throttled with 429
+    * if (!accessToken) karate.abort()
+    # The policy in the test environment is deliberately set low enough to be
+    # provable inside a CI run. Proving a production-grade limit would require
+    # generating production-grade load from a CI runner, which measures the
+    # runner rather than the gateway.
+    * def burst =
+      """
+      function() {
+        var statuses = [];
+        for (var i = 0; i < 40; i++) {
+          var r = karate.call('classpath:helpers/single-eligibility-call.feature',
+                              { baseUrl: baseUrl, pdr: validPdr, token: accessToken });
+          statuses.push(r.status);
+        }
+        return statuses;
+      }
+      """
+    * def statuses = burst()
+    * def throttled = karate.filter(statuses, function(s){ return s == 429 })
+    And assert throttled.length > 0
+    # A 429 must be an honest refusal, not a disguised failure: the client is
+    # expected to back off and retry, so anything other than 429 (a 500, say)
+    # would send the portal down a retry path that makes the overload worse.
+
+  @policy-rate-limit
+  Scenario: A throttled response advertises when to retry
+    * if (!accessToken) karate.abort()
+    # One line: Karate's parser does not accept a * step wrapped across lines
+    # outside a docstring block. Wrapped, it fails the whole feature file with
+    # "mismatched input '{' expecting <EOF>" and no scenario runs at all.
+    * def r = karate.call('classpath:helpers/single-eligibility-call.feature', { baseUrl: baseUrl, pdr: validPdr, token: accessToken })
+    * if (r.status == 429) karate.match(r.headers['x-ratelimit-remaining'], '#notnull')

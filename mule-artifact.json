@@ -1,5 +1,6 @@
 {
   "minMuleVersion": "4.6.0",
+  "javaSpecificationVersions": ["17"],
   "secureProperties": [
     "sii.client_secret",
     "salesforce.client_secret",
