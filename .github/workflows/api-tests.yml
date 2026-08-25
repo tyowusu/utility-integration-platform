@@ -211,9 +211,26 @@ jobs:
         working-directory: qa-automation
         # Failsafe goals invoked directly rather than via `verify`, so the
         # Karate suites above are not re-run as a side effect of the lifecycle.
+        #
+        # The two IT classes are invoked separately with a cooldown between
+        # them. Together they issue more than the rate limit allows inside one
+        # minute — GatewaySecurityIT passes 8/8 and SwitchingContractIT then
+        # fails 5/5 on 429, which reads as a contract regression and is
+        # nothing of the sort. Splitting the invocation keeps each class inside
+        # one window. A step-level cooldown cannot help here: both classes run
+        # inside a single Failsafe invocation.
         run: |
           mvn --batch-mode --no-transfer-progress \
             test-compile failsafe:integration-test failsafe:verify \
+            -Dit.test=GatewaySecurityIT \
+            -Dapi.base.url=${BASE_URL} \
+            -Daccess.token=${{ steps.token.outputs.token }}
+
+          sleep 65
+
+          mvn --batch-mode --no-transfer-progress \
+            failsafe:integration-test failsafe:verify \
+            -Dit.test=SwitchingContractIT \
             -Dapi.base.url=${BASE_URL} \
             -Daccess.token=${{ steps.token.outputs.token }}
 
@@ -240,6 +257,11 @@ jobs:
     # parallel they throttle each other and fail on 429s that belong to
     # neither suite.
     needs: [resolve, functional]
+    # `needs` here orders the jobs; it must not also gate them. A failed need
+    # skips its dependents, and `functional` fails on any environment whose
+    # downstream mocks do not resolve — so gating on it silently stopped
+    # Newman and JMeter running at all. Order without gating.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -299,7 +321,7 @@ jobs:
     # Serialised for the same reason, and more so: this job exists to
     # generate load, which is precisely what exhausts everyone else's quota.
     needs: [resolve, postman]
-    if: inputs.run_performance
+    if: ${{ !cancelled() && inputs.run_performance }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
