@@ -106,6 +106,20 @@
                         <connectedAppClientId>${connectedApp.clientId}</connectedAppClientId>
                         <connectedAppClientSecret>${connectedApp.clientSecret}</connectedAppClientSecret>
                         <connectedAppGrantType>client_credentials</connectedAppGrantType>
+                        <!--
+                          The plugin's default deployment validation window is
+                          shorter than a cold start on a trial shared space.
+                          When it expires the build fails with "Validation
+                          timed out waiting for application to start" while the
+                          application is, in fact, starting perfectly well —
+                          run 32872694403 failed here with the replica already
+                          RUNNING and serving traffic.
+                          A deploy that succeeded and a build that reports
+                          failure is the worst combination to debug, because
+                          the obvious next step is to redeploy something that
+                          is already deployed.
+                        -->
+                        <deploymentTimeout>2400000</deploymentTimeout>
                         <replicas>${ch2.replicas}</replicas>
                         <vCores>${ch2.vcores}</vCores>
 
