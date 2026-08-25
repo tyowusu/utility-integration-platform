@@ -79,6 +79,11 @@ jobs:
                 "id": "anypoint-exchange-v3",
                 "username": "~~~Client~~~",
                 "password": "${{ secrets.ANYPOINT_CONNECTED_APP_CLIENT_ID }}~?~${{ secrets.ANYPOINT_CONNECTED_APP_CLIENT_SECRET }}"
+              },
+              {
+                "id": "mulesoft-private",
+                "username": "${{ secrets.MULESOFT_NEXUS_USERNAME || 'not-configured' }}",
+                "password": "${{ secrets.MULESOFT_NEXUS_PASSWORD || 'not-configured' }}"
               }
             ]
 
@@ -94,9 +99,40 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building version ${VERSION}"
 
+      # -----------------------------------------------------------------
+      # `verify` runs MUnit, MUnit needs a Mule EE runtime, and that resolves
+      # com.mulesoft.licm:licm from MuleSoft's private Nexus — which answers
+      # 401 without a paid support entitlement. ci-build.yml has handled this
+      # since the start; this job did not, so the very first cd-deploy run
+      # died here having deployed nothing.
+      #
+      # The failure is worth recognising by shape: the reported error is
+      # "Could not find embedded container bom artifact", several frames above
+      # the 401 that actually caused it, and it repeats once per runtime
+      # version the resolver tries.
+      # -----------------------------------------------------------------
+      - name: Check for Mule EE runtime entitlement
+        id: ee
+        run: |
+          if [ -n "${{ secrets.MULESOFT_NEXUS_USERNAME }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and test
+        if: steps.ee.outputs.available == 'true'
         run: |
           mvn --batch-mode --no-transfer-progress clean verify \
+            -Dmule.env=local \
+            -Dmule.secure.key=${{ secrets.MULE_SECURE_KEY_LOCAL || 'localdevkey12345' }}
+
+      - name: Build without MUnit — no Mule EE runtime entitlement
+        if: steps.ee.outputs.available != 'true'
+        run: |
+          echo "::warning title=MUnit skipped::MULESOFT_NEXUS_USERNAME is not set, so a Mule EE runtime cannot be downloaded and MUnit cannot run before this deployment. The artifact is still compiled and packaged, and every Mule XML config and DataWeave script is still validated. The deployed environments are verified by the Karate suites in the verify-* jobs."
+          mvn --batch-mode --no-transfer-progress clean package \
+            -DskipMunitTests \
             -Dmule.env=local \
             -Dmule.secure.key=${{ secrets.MULE_SECURE_KEY_LOCAL || 'localdevkey12345' }}
 
