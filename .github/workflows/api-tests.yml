@@ -162,8 +162,18 @@ jobs:
             -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
             -Dapi.audience=${{ needs.resolve.outputs.audience }}
 
+      # `!cancelled()`, because a step without it is skipped as soon as an earlier
+      # step fails — and the full functional suite fails on any environment
+      # whose Salesforce/SII/billing mocks do not resolve. That silently took
+      # the gateway suite with it: the run reported "Karate failed" while the
+      # single most valuable check in the pipeline, the one proving
+      # autodiscovery bound and the policies are enforcing, had never executed.
+      #
+      # These suites are independent. Nothing about a 504 from an absent
+      # downstream mock says anything about whether the gateway is governing
+      # traffic, so one must not suppress the other.
       - name: Gateway policy suite
-        if: inputs.run_gateway_policies
+        if: ${{ !cancelled() && inputs.run_gateway_policies }}
         working-directory: qa-automation
         run: |
           mvn --batch-mode --no-transfer-progress test \
@@ -177,8 +187,9 @@ jobs:
             -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
             -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
 
+      # Same reasoning as the gateway suite above.
       - name: Contract and security integration tests
-        if: inputs.run_writes
+        if: ${{ !cancelled() && inputs.run_writes }}
         working-directory: qa-automation
         # Failsafe goals invoked directly rather than via `verify`, so the
         # Karate suites above are not re-run as a side effect of the lifecycle.
