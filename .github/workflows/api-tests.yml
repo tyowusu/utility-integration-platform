@@ -63,21 +63,18 @@ jobs:
   resolve:
     name: Resolve target
     runs-on: ubuntu-latest
+    # base_url and token_url are deliberately NOT outputs. GitHub redacts
+    # secrets from job outputs, so a secret read here and passed through
+    # $GITHUB_OUTPUT arrives downstream as an empty string — silently. No
+    # error, no annotation; the consuming job runs curl against "" and fails
+    # several steps later parsing an empty response as JSON. Each job resolves
+    # them from `secrets` itself, below, where they are available in full.
+    # `audience` survives because it comes from `vars`, not `secrets`.
     outputs:
-      base_url: ${{ steps.env.outputs.base_url }}
-      token_url: ${{ steps.env.outputs.token_url }}
       audience: ${{ steps.env.outputs.audience }}
     steps:
       - id: env
         run: |
-          case "${{ inputs.environment }}" in
-            dev)  echo "base_url=${{ secrets.API_BASE_URL_DEV }}"  >> "$GITHUB_OUTPUT"
-                  echo "token_url=${{ secrets.TOKEN_URL_DEV }}"    >> "$GITHUB_OUTPUT" ;;
-            test) echo "base_url=${{ secrets.API_BASE_URL_TEST }}" >> "$GITHUB_OUTPUT"
-                  echo "token_url=${{ secrets.TOKEN_URL_TEST }}"   >> "$GITHUB_OUTPUT" ;;
-            prod) echo "base_url=${{ secrets.API_BASE_URL_PROD }}" >> "$GITHUB_OUTPUT"
-                  echo "token_url=${{ secrets.TOKEN_URL_PROD }}"   >> "$GITHUB_OUTPUT" ;;
-          esac
           # Which API the token is issued for. Auth0 requires it on a
           # client-credentials grant against a custom API; omitting it yields
           # a token for the provider's own management API, which the gateway
@@ -110,6 +107,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    env:
+      # Resolved per job, not inherited from `resolve` — see the note on that
+      # job's outputs. A secret cannot travel through a job output.
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -125,7 +128,7 @@ jobs:
       - name: Obtain access token
         id: token
         run: |
-          TOKEN=$(curl -sk -X POST "${{ needs.resolve.outputs.token_url }}" \
+          TOKEN=$(curl -sk -X POST "${TOKEN_URL}" \
             -d "grant_type=client_credentials" \
             -d "client_id=${{ secrets.API_CLIENT_ID }}" \
             -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
@@ -140,8 +143,8 @@ jobs:
           mvn --batch-mode --no-transfer-progress test \
             -Dtest=SwitchingFunctionalTest#smoke \
             -Dkarate.env=${{ inputs.environment }} \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
-            -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
             -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
             -Dapi.audience=${{ needs.resolve.outputs.audience }}
@@ -153,8 +156,8 @@ jobs:
           mvn --batch-mode --no-transfer-progress test \
             -Dtest=SwitchingFunctionalTest#functional \
             -Dkarate.env=${{ inputs.environment }} \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
-            -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
             -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
             -Dapi.audience=${{ needs.resolve.outputs.audience }}
@@ -166,8 +169,8 @@ jobs:
           mvn --batch-mode --no-transfer-progress test \
             -Dtest=SwitchingFunctionalTest#gateway \
             -Dkarate.env=${{ inputs.environment }} \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
-            -Dtoken.url=${{ needs.resolve.outputs.token_url }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
             -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
             -Dapi.audience=${{ needs.resolve.outputs.audience }} \
@@ -182,7 +185,7 @@ jobs:
         run: |
           mvn --batch-mode --no-transfer-progress \
             test-compile failsafe:integration-test failsafe:verify \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
+            -Dapi.base.url=${BASE_URL} \
             -Daccess.token=${{ steps.token.outputs.token }}
 
       - name: Publish results
@@ -207,6 +210,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    env:
+      # Resolved per job, not inherited from `resolve` — see the note on that
+      # job's outputs. A secret cannot travel through a job output.
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -228,8 +237,8 @@ jobs:
 
           eval newman run switching-api.postman_collection.json \
             -e env.${{ inputs.environment }}.postman_environment.json \
-            --env-var "base_url=${{ needs.resolve.outputs.base_url }}" \
-            --env-var "token_url=${{ needs.resolve.outputs.token_url }}" \
+            --env-var "base_url=${BASE_URL}" \
+            --env-var "token_url=${TOKEN_URL}" \
             --env-var "client_id=${{ secrets.API_CLIENT_ID }}" \
             --env-var "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
             $FOLDERS \
@@ -253,6 +262,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    env:
+      # Resolved per job, not inherited from `resolve` — see the note on that
+      # job's outputs. A secret cannot travel through a job output.
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -265,7 +280,7 @@ jobs:
       - name: Obtain access token
         id: token
         run: |
-          TOKEN=$(curl -sk -X POST "${{ needs.resolve.outputs.token_url }}" \
+          TOKEN=$(curl -sk -X POST "${TOKEN_URL}" \
             -d "grant_type=client_credentials" \
             -d "client_id=${{ secrets.API_CLIENT_ID }}" \
             -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
@@ -283,7 +298,7 @@ jobs:
         working-directory: qa-automation
         run: |
           mvn --batch-mode --no-transfer-progress verify -Pperf -DskipTests \
-            -Dapi.base.url=${{ needs.resolve.outputs.base_url }} \
+            -Dapi.base.url=${BASE_URL} \
             -Daccess.token=${{ steps.token.outputs.token }}
 
       - name: Upload JMeter report
