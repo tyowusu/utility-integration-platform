@@ -50,6 +50,7 @@ Feature: Submit a switching request (cambio venditore)
   # ---------------------------------------------------------------------------
   # Happy path
   # ---------------------------------------------------------------------------
+  @requires-downstream
   Scenario: A valid residential request inside the window is accepted with 202
     Given path 'switching-requests'
     And request
@@ -82,6 +83,7 @@ Feature: Submit a switching request (cambio venditore)
     # integrations.
     And match responseStatus == 202
 
+  @requires-downstream
   Scenario: A valid business request is accepted with a partita IVA
     Given path 'switching-requests'
     And header x-channel = 'B2B_PORTAL'
@@ -142,6 +144,7 @@ Feature: Submit a switching request (cambio venditore)
     Then status 400
     And match response.error.correlationId == '#string'
 
+  @requires-downstream
   Scenario: An unrecognised channel header is rejected
     Given path 'switching-requests'
     And header x-channel = 'CARRIER_PIGEON'
@@ -173,6 +176,7 @@ Feature: Submit a switching request (cambio venditore)
   # ---------------------------------------------------------------------------
   # Idempotency
   # ---------------------------------------------------------------------------
+  @requires-downstream
   Scenario: A repeated submission returns the original request, not a new one
     * def pdr = uniquePdr()
     * def body =

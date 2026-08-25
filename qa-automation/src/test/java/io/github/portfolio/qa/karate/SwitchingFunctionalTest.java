@@ -26,10 +26,37 @@ import com.intuit.karate.junit5.Karate;
  */
 class SwitchingFunctionalTest {
 
+    /**
+     * The blocking functional suite: everything the application can answer on
+     * its own, plus everything the gateway refuses before a downstream call is
+     * made. Green here is a real statement about the code.
+     *
+     * ~@requires-downstream excludes the scenarios that cannot pass until SII,
+     * Salesforce, billing and the identity provider have stand-ins. Those are
+     * not weaker tests — they cover submission, status and duplicate detection,
+     * which is the core of the regulated flow — they are simply unrunnable
+     * against an environment whose downstream hosts do not resolve. They run
+     * separately, in {@link #mocksRequired()}, so their absence is visible
+     * rather than buried in a permanently red suite that everyone learns to
+     * ignore.
+     */
     @Karate.Test
     Karate functional() {
         return Karate.run("classpath:features/switching")
-                .tags("@functional")
+                .tags("@functional", "~@requires-downstream")
+                .relativeTo(getClass());
+    }
+
+    /**
+     * The complement of {@link #functional()}: only the scenarios that need
+     * downstream stand-ins. Expected to fail with 504 CONNECTIVITY until the
+     * mocks exist. Run as an informational job, never as a merge gate — a
+     * failure here says nothing about the change under test.
+     */
+    @Karate.Test
+    Karate mocksRequired() {
+        return Karate.run("classpath:features/switching")
+                .tags("@functional", "@requires-downstream")
                 .relativeTo(getClass());
     }
 

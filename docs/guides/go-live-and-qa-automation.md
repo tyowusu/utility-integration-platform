@@ -893,7 +893,41 @@ cd postman && newman run switching-api.postman_collection.json \
 Karate writes `target/karate-reports/karate-summary.html`. Open it — one of the
 better test reports in circulation.
 
-### 13.2 Fixtures that do not expire
+### 13.2 Scenarios that cannot pass yet, and why they are tagged
+
+Eight of the sixteen functional scenarios — submission, status, and duplicate
+detection — call SII, Salesforce, billing or the identity provider. Every
+environment here points at non-resolving placeholders (`sii-mock-test.internal`
+and friends), and SII has no public sandbox to point at instead, so those eight
+return `504 CONNECTIVITY` no matter how correct the code is.
+
+They are tagged `@requires-downstream` and excluded from the blocking suite by
+`~@requires-downstream`, then run separately as an informational CI job.
+
+That split is deliberate, and the two obvious alternatives are both worse:
+
+- **Leaving them in** gives a permanently red check. A suite that is always red
+  is a suite nobody reads, and the day it goes red for a real reason, nothing
+  changes on screen.
+- **Suppressing them** gives a green check with a hole in it — which is the
+  failure this guide keeps returning to. These are not marginal tests; they
+  cover the core of the regulated flow.
+
+Tagging states the gap instead of hiding it. The job name says the coverage is
+missing, the warning names the hosts responsible, and the results are still
+published so you can see exactly which scenarios are absent.
+
+When stand-ins exist, delete the informational job and the `~@requires-downstream`
+filter. Nothing else needs to change.
+
+> One of the eight is worth a second look. `An unrecognised channel header is
+> rejected` expects `400` and gets `504`, because the application requests an
+> OAuth token *before* validating `x-channel`. A malformed header from a portal
+> therefore cannot be refused at the contract boundary — it costs a downstream
+> round trip first. That is an application ordering question, not a test defect,
+> and it only became visible once the suite ran against a deployed environment.
+
+### 13.3 Fixtures that do not expire
 
 Every date is computed at run time relative to today. None is hardcoded.
 
@@ -912,7 +946,7 @@ the 10th, because on those days the scenario it describes does not exist.
 Skipping is honest; rewriting the assertion to pass on every date would test
 nothing.
 
-### 13.3 Worth reading for the reasoning
+### 13.4 Worth reading for the reasoning
 
 - `duplicate-request-returns-200-not-a-second-sii-submission` — the load-bearing
   assertion is `verify-call ... times="0"`. Asserting only on the response body

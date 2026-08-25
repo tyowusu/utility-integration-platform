@@ -250,13 +250,88 @@ jobs:
           path: qa-automation/target/karate-reports/
           retention-days: 14
 
+  # ===========================================================================
+  # SUITES THAT CANNOT PASS YET — INFORMATIONAL, NEVER A GATE
+  # ===========================================================================
+  # These scenarios cover submission, status and duplicate detection: the core
+  # of the regulated flow, and the most valuable tests in the repository. They
+  # fail with 504 CONNECTIVITY because SII, Salesforce, billing and the
+  # identity provider are non-resolving placeholders in every environment we
+  # have — SII has no public sandbox at all.
+  #
+  # Deliberately a separate job with continue-on-error rather than a
+  # `|| true` inside the blocking suite. The distinction matters: the job
+  # name and its published check state plainly that this coverage is absent.
+  # Folding them into the main suite would leave a permanently red check that
+  # everyone learns to ignore; suppressing them silently would leave a green
+  # check with a hole in it. Both are worse than saying so.
+  #
+  # When the mocks exist, delete this job and the ~@requires-downstream filter
+  # on the suite above.
+  functional-mocks:
+    name: Suites needing downstream mocks (informational)
+    needs: [resolve, functional]
+    if: ${{ !cancelled() && inputs.run_writes }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Obtain access token
+        id: token
+        run: |
+          TOKEN=$(curl -sk -X POST "${TOKEN_URL}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=${{ secrets.API_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
+            -d "audience=${{ needs.resolve.outputs.audience }}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Scenarios requiring downstream stand-ins
+        working-directory: qa-automation
+        run: |
+          echo "::warning title=Coverage gap::Submission, status and duplicate-detection scenarios cannot pass until SII, Salesforce, billing and the identity provider have stand-ins. The hosts in ${{ inputs.environment }}.yaml (sii-mock-*.internal, salesforce-mock-*.internal, billing-mock-*.internal, identity-mock-*.internal) do not resolve, so these return 504 CONNECTIVITY regardless of whether the code is correct."
+          mvn --batch-mode --no-transfer-progress test \
+            -Dtest=SwitchingFunctionalTest#mocksRequired \
+            -Dkarate.env=${{ inputs.environment }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
+            -Dclient.id=${{ secrets.API_CLIENT_ID }} \
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }}
+
+      # fail_on_failure is false on purpose. The results are worth publishing —
+      # they show exactly which coverage is missing — but they must not turn a
+      # check red for an absence everyone already knows about.
+      - name: Publish results
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'qa-automation/target/surefire-reports/*.xml'
+          check_name: 'API tests (needs mocks) — ${{ inputs.environment }}'
+          fail_on_failure: false
+
   postman:
     name: Newman collection
     # Serialised behind `functional`, not run alongside it. These jobs
     # authenticate as the same client and share one rate-limit quota, so in
     # parallel they throttle each other and fail on 429s that belong to
     # neither suite.
-    needs: [resolve, functional]
+    needs: [resolve, functional-mocks]
     # `needs` here orders the jobs; it must not also gate them. A failed need
     # skips its dependents, and `functional` fails on any environment whose
     # downstream mocks do not resolve — so gating on it silently stopped

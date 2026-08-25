@@ -1,4 +1,9 @@
-@switching @functional @readonly
+@switching @functional @readonly @requires-downstream
+# Every scenario here reads a request's status, which the application can
+# only answer by calling SII. With no SII sandbox in existence and the
+# host in test.yaml a non-resolving placeholder, all four return 504
+# regardless of whether the code is correct. Tagged so the blocking suite
+# excludes them and their absence is stated rather than implied.
 Feature: Retrieve switching request status
 
   # ===========================================================================
