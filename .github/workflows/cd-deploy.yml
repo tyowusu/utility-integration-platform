@@ -103,7 +103,13 @@ jobs:
       # Publishing to Exchange makes the release an immutable, versioned,
       # discoverable artifact. A deployment can then be traced to a specific
       # Exchange version rather than to "whatever main looked like that day".
+      # Only on push/tag. Exchange versions are immutable, so republishing a
+      # version that already exists fails the build — which would make every
+      # manual re-dispatch fail at this step until someone bumped the pom.
+      # A dispatch is a redeploy, not a release; the jar is still uploaded as
+      # a run artifact below and the deploy jobs consume that, not Exchange.
       - name: Publish to Anypoint Exchange
+        if: github.event_name == 'push'
         run: |
           mvn --batch-mode --no-transfer-progress deploy -DskipTests \
             -Danypoint.orgId=${{ secrets.ANYPOINT_ORG_ID }}
@@ -215,7 +221,22 @@ jobs:
   deploy-test:
     name: Deploy to test
     needs: [build, verify-dev]
-    if: github.event_name == 'push' || inputs.target_environment == 'test'
+    # A skipped `needs` job skips this one too, which is what makes the naive
+    # form of this condition unusable. Dispatching with target_environment=test
+    # skips deploy-dev (correctly — we are not deploying dev), that skips
+    # verify-dev, and a skipped verify-dev then skips deploy-test. The run
+    # completes "successfully" having deployed nothing at all.
+    #
+    # So the gate is expressed on job *results* rather than on `needs` alone:
+    # a promotion from a push must have a green verify-dev behind it, while a
+    # direct dispatch at test is allowed to proceed without one.
+    if: >-
+      !cancelled()
+      && needs.build.result == 'success'
+      && (
+        (github.event_name == 'push' && needs.verify-dev.result == 'success')
+        || inputs.target_environment == 'test'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment:
@@ -290,7 +311,16 @@ jobs:
   deploy-prod:
     name: Deploy to production
     needs: [build, verify-test]
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.target_environment == 'prod'
+    # Same skipped-dependency trap as deploy-test above. A tag push must carry
+    # a green verify-test; a deliberate dispatch at prod may proceed without
+    # one, and is gated by the environment's required reviewers instead.
+    if: >-
+      !cancelled()
+      && needs.build.result == 'success'
+      && (
+        (startsWith(github.ref, 'refs/tags/v') && needs.verify-test.result == 'success')
+        || inputs.target_environment == 'prod'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Configure this GitHub Environment with required reviewers. A production
