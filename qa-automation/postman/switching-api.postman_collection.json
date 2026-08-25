@@ -594,7 +594,7 @@
       "name": "40 — Gateway policies",
       "item": [
         {
-          "name": "Anonymous request → 401/403",
+          "name": "Anonymous request → refused by the gateway",
           "event": [
             {
               "listen": "test",
@@ -602,12 +602,17 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Gateway refuses anonymous traffic', function () {",
-                  "    // Doubles as an autodiscovery health check. A 200 here",
-                  "    // means the app deployed but never bound to its API",
-                  "    // Manager instance — it is serving traffic ungoverned,",
-                  "    // and nothing in the logs says so.",
+                  "    // 400 is included deliberately. A *missing* token is answered by the",
+                  "    // JWT validation policy with 400 {\"error\": \"JWT Token is required.\"},",
+                  "    // not the 401 an absent credential suggests — a malformed or unsigned",
+                  "    // token does return 401. All three are refusals; asserting 401/403",
+                  "    // alone fails against correct gateway behaviour.",
+                  "    //",
+                  "    // Doubles as an autodiscovery health check. A 200 here means the app",
+                  "    // deployed but never bound to its API Manager instance — it is serving",
+                  "    // traffic ungoverned, and nothing in the logs says so.",
                   "    pm.expect(pm.response.code, 'If 200, autodiscovery did not bind')",
-                  "      .to.be.oneOf([401, 403]);",
+                  "      .to.be.oneOf([400, 401, 403]);",
                   "});"
                 ]
               }
