@@ -24,6 +24,25 @@ API_INSTANCE_ID_DEV="21117824"
 API_BASE_URL_DEV="https://switching-process-api-dev-i6det0.5sc6y6-1.usa-e2.cloudhub.io"
 TOKEN_URL_DEV="https://dev-y07kpoe8c074nk6q.us.auth0.com/oauth/token"
 
+# --- test --------------------------------------------------------------
+# Sourced from the environment rather than hardcoded, because unlike dev
+# these are not yet fixed. Export them before running, or the test block
+# below skips itself rather than writing an empty secret — an empty secret
+# is worse than a missing one, because the workflow then fails at deploy
+# time with an authentication error instead of an obvious "not configured".
+#
+#   Access Management -> Environments -> test        -> client id / secret
+#   API Manager (test env) -> the API instance       -> instance id
+#   Runtime Manager (test env) -> the app            -> public URL
+#
+ENV_CLIENT_ID_TEST="${ENV_CLIENT_ID_TEST:-}"
+API_INSTANCE_ID_TEST="${API_INSTANCE_ID_TEST:-}"
+API_BASE_URL_TEST="${API_BASE_URL_TEST:-}"
+# Same Auth0 tenant as dev today. When test gets its own audience (see
+# API_AUDIENCE_TEST), this stays the same URL — the audience differs, the
+# token endpoint does not.
+TOKEN_URL_TEST="${TOKEN_URL_TEST:-$TOKEN_URL_DEV}"
+
 set_plain() {
   printf '%s' "$2" | gh secret set "$1" --repo "$REPO"
   echo "  set $1"
@@ -47,6 +66,16 @@ set_plain ANYPOINT_PLATFORM_CLIENT_ID_DEV  "$ENV_CLIENT_ID_DEV"
 set_plain API_INSTANCE_ID_DEV              "$API_INSTANCE_ID_DEV"
 set_plain API_BASE_URL_DEV                 "$API_BASE_URL_DEV"
 set_plain TOKEN_URL_DEV                    "$TOKEN_URL_DEV"
+
+if [[ -n "$ENV_CLIENT_ID_TEST" && -n "$API_INSTANCE_ID_TEST" && -n "$API_BASE_URL_TEST" ]]; then
+  echo "==> Non-secret identifiers (test)"
+  set_plain ANYPOINT_PLATFORM_CLIENT_ID_TEST "$ENV_CLIENT_ID_TEST"
+  set_plain API_INSTANCE_ID_TEST             "$API_INSTANCE_ID_TEST"
+  set_plain API_BASE_URL_TEST                "$API_BASE_URL_TEST"
+  set_plain TOKEN_URL_TEST                   "$TOKEN_URL_TEST"
+else
+  echo "==> SKIP test identifiers — export ENV_CLIENT_ID_TEST, API_INSTANCE_ID_TEST and API_BASE_URL_TEST to set them" >&2
+fi
 
 echo "==> Secrets from Keychain"
 set_from_keychain ANYPOINT_CONNECTED_APP_CLIENT_SECRET uip-ca-secret
