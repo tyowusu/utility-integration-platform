@@ -141,8 +141,10 @@ Feature: API Manager gateway policy enforcement
   @policy-rate-limit
   Scenario: A throttled response advertises when to retry
     * if (!accessToken) karate.abort()
-    * def r = karate.call('classpath:helpers/single-eligibility-call.feature',
-                          { baseUrl: baseUrl, pdr: validPdr, token: accessToken })
+    # One line: Karate's parser does not accept a * step wrapped across lines
+    # outside a docstring block. Wrapped, it fails the whole feature file with
+    # "mismatched input '{' expecting <EOF>" and no scenario runs at all.
+    * def r = karate.call('classpath:helpers/single-eligibility-call.feature', { baseUrl: baseUrl, pdr: validPdr, token: accessToken })
     * if (r.responseStatus == 429) karate.match(r.responseHeaders['x-ratelimit-remaining'], '#notnull')
 
   # ---------------------------------------------------------------------------
