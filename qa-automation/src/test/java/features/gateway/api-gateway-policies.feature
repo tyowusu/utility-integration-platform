@@ -155,7 +155,7 @@ Feature: API Manager gateway policy enforcement
         for (var i = 0; i < 40; i++) {
           var r = karate.call('classpath:helpers/single-eligibility-call.feature',
                               { baseUrl: baseUrl, pdr: validPdr, token: accessToken });
-          statuses.push(r.responseStatus);
+          statuses.push(r.status);
         }
         return statuses;
       }
@@ -174,4 +174,4 @@ Feature: API Manager gateway policy enforcement
     # outside a docstring block. Wrapped, it fails the whole feature file with
     # "mismatched input '{' expecting <EOF>" and no scenario runs at all.
     * def r = karate.call('classpath:helpers/single-eligibility-call.feature', { baseUrl: baseUrl, pdr: validPdr, token: accessToken })
-    * if (r.responseStatus == 429) karate.match(r.responseHeaders['x-ratelimit-remaining'], '#notnull')
+    * if (r.status == 429) karate.match(r.headers['x-ratelimit-remaining'], '#notnull')
