@@ -162,6 +162,20 @@ jobs:
             -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
             -Dapi.audience=${{ needs.resolve.outputs.audience }}
 
+      # The gateway suite's throttling scenario deliberately bursts past the
+      # rate limit. The limit is per client per minute and every suite here
+      # authenticates as the same client, so without a cooldown the burst
+      # poisons whatever runs next, and whatever ran before eats the quota
+      # this suite needs for its own 200-expecting scenarios.
+      #
+      # This is not hypothetical: run 32868014923 had the gateway suite at
+      # 8/11 and every REST Assured test failing with "Expected status code
+      # <200> but was <429>" — none of which had anything to do with the
+      # gateway or the contracts.
+      - name: Wait out the rate-limit window
+        if: ${{ !cancelled() && inputs.run_gateway_policies }}
+        run: sleep 65
+
       # `!cancelled()`, because a step without it is skipped as soon as an earlier
       # step fails — and the full functional suite fails on any environment
       # whose Salesforce/SII/billing mocks do not resolve. That silently took
@@ -187,7 +201,11 @@ jobs:
             -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
             -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
 
-      # Same reasoning as the gateway suite above.
+      # Same reason: the burst above just exhausted the window.
+      - name: Wait out the rate-limit window again
+        if: ${{ !cancelled() && inputs.run_writes }}
+        run: sleep 65
+
       - name: Contract and security integration tests
         if: ${{ !cancelled() && inputs.run_writes }}
         working-directory: qa-automation
@@ -217,7 +235,11 @@ jobs:
 
   postman:
     name: Newman collection
-    needs: resolve
+    # Serialised behind `functional`, not run alongside it. These jobs
+    # authenticate as the same client and share one rate-limit quota, so in
+    # parallel they throttle each other and fail on 429s that belong to
+    # neither suite.
+    needs: [resolve, functional]
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -274,7 +296,9 @@ jobs:
 
   performance:
     name: JMeter peak-day profile
-    needs: resolve
+    # Serialised for the same reason, and more so: this job exists to
+    # generate load, which is precisely what exhausts everyone else's quota.
+    needs: [resolve, postman]
     if: inputs.run_performance
     runs-on: ubuntu-latest
     timeout-minutes: 45

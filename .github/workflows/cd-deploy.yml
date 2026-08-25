@@ -40,6 +40,13 @@ concurrency:
 permissions:
   contents: read
   id-token: write
+  # Required by the reusable api-tests workflow, which publishes JUnit
+  # results as checks. Without these it logs "Failed to create checks using
+  # the provided token / Resource not accessible by integration" and the test
+  # results never appear on the PR — the job's own red or green is all you
+  # get. A called workflow cannot request permissions the caller lacks.
+  checks: write
+  pull-requests: write
 
 env:
   JAVA_VERSION: '17'
