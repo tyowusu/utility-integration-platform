@@ -548,6 +548,30 @@ Create one client **without** an approved contract. That is
 `UNAPPROVED_CLIENT_ID` — used to prove client-id enforcement rejects an
 unregistered caller.
 
+> **Contracts are per API instance, and the client applications are not.**
+> The application is an organisation-level object with one client id and
+> secret; the *contract* binding it to an API exists separately on each
+> instance. Approving your QA client against dev grants it nothing in test.
+>
+> The symptom is narrow and easy to misread. Every rejection scenario in the
+> gateway suite passes against the new environment — the gateway is refusing
+> everything, so of course it refuses the cases meant to be refused — and only
+> the scenarios needing a *successful* call fail, with
+> `{"error": "Invalid Client"}`. It reads as a credentials or IdP problem. It
+> is neither: the token is valid and the client provider is fine, there is
+> simply no contract on that instance.
+>
+> So for each new environment, repeat **Exchange → Request access** for both
+> applications, selecting the new instance in the **API instance** dropdown
+> (it defaults to whichever you used last — check it). Approve the QA client;
+> leave the other Pending, or revoke it if the instance auto-approves.
+>
+> Registering the second client properly matters. `A registered client without
+> an approved contract is rejected` only tests contract enforcement if the
+> client is genuinely registered against *that* instance. An unknown client is
+> rejected for an entirely different reason, and the scenario passes while
+> proving nothing.
+
 ---
 
 ## 9. Find the CloudHub 2.0 target name
