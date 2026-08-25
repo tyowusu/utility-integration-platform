@@ -244,6 +244,7 @@ jobs:
             -e env.${{ inputs.environment }}.postman_environment.json \
             --env-var "base_url=${BASE_URL}" \
             --env-var "token_url=${TOKEN_URL}" \
+            --env-var "audience=${{ needs.resolve.outputs.audience }}" \
             --env-var "client_id=${{ secrets.API_CLIENT_ID }}" \
             --env-var "client_secret=${{ secrets.API_CLIENT_SECRET }}" \
             $FOLDERS \

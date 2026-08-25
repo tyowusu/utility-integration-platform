@@ -6,7 +6,13 @@
   },
   "auth": {
     "type": "bearer",
-    "bearer": [{ "key": "token", "value": "{{access_token}}", "type": "string" }]
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
   },
   "event": [
     {
@@ -62,11 +68,26 @@
     }
   ],
   "variable": [
-    { "key": "validEffectiveDate", "value": "" },
-    { "key": "midMonthDate", "value": "" },
-    { "key": "pastDate", "value": "" },
-    { "key": "uniquePdr", "value": "" },
-    { "key": "seededRequestId", "value": "" }
+    {
+      "key": "validEffectiveDate",
+      "value": ""
+    },
+    {
+      "key": "midMonthDate",
+      "value": ""
+    },
+    {
+      "key": "pastDate",
+      "value": ""
+    },
+    {
+      "key": "uniquePdr",
+      "value": ""
+    },
+    {
+      "key": "seededRequestId",
+      "value": ""
+    }
   ],
   "item": [
     {
@@ -91,18 +112,45 @@
             }
           ],
           "request": {
-            "auth": { "type": "noauth" },
+            "auth": {
+              "type": "noauth"
+            },
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
             "body": {
               "mode": "urlencoded",
               "urlencoded": [
-                { "key": "grant_type", "value": "client_credentials" },
-                { "key": "client_id", "value": "{{client_id}}" },
-                { "key": "client_secret", "value": "{{client_secret}}" }
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{client_id}}"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "{{client_secret}}"
+                },
+                {
+                  "key": "audience",
+                  "value": "{{audience}}",
+                  "type": "text",
+                  "description": "Required by Auth0 on a client-credentials grant. Without it the token is issued for the provider's own management API and the gateway refuses it on aud — a 401 that reads as bad credentials."
+                }
               ]
             },
-            "url": { "raw": "{{token_url}}", "host": ["{{token_url}}"] }
+            "url": {
+              "raw": "{{token_url}}",
+              "host": [
+                "{{token_url}}"
+              ]
+            }
           }
         }
       ]
@@ -157,8 +205,15 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/supply-points/12345678901234/eligibility",
-              "host": ["{{base_url}}"],
-              "path": ["api", "supply-points", "12345678901234", "eligibility"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "supply-points",
+                "12345678901234",
+                "eligibility"
+              ]
             }
           }
         },
@@ -183,8 +238,15 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/supply-points/NOT-A-PDR/eligibility",
-              "host": ["{{base_url}}"],
-              "path": ["api", "supply-points", "NOT-A-PDR", "eligibility"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "supply-points",
+                "NOT-A-PDR",
+                "eligibility"
+              ]
             }
           }
         }
@@ -226,9 +288,18 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-channel", "value": "B2C_PORTAL" },
-              { "key": "x-client-request-id", "value": "{{$guid}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-channel",
+                "value": "B2C_PORTAL"
+              },
+              {
+                "key": "x-client-request-id",
+                "value": "{{$guid}}"
+              }
             ],
             "body": {
               "mode": "raw",
@@ -236,8 +307,13 @@
             },
             "url": {
               "raw": "{{base_url}}/api/switching-requests",
-              "host": ["{{base_url}}"],
-              "path": ["api", "switching-requests"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "switching-requests"
+              ]
             }
           }
         },
@@ -265,8 +341,14 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-channel", "value": "B2C_PORTAL" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-channel",
+                "value": "B2C_PORTAL"
+              }
             ],
             "body": {
               "mode": "raw",
@@ -274,8 +356,13 @@
             },
             "url": {
               "raw": "{{base_url}}/api/switching-requests",
-              "host": ["{{base_url}}"],
-              "path": ["api", "switching-requests"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "switching-requests"
+              ]
             }
           }
         },
@@ -311,8 +398,14 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-channel", "value": "B2C_PORTAL" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-channel",
+                "value": "B2C_PORTAL"
+              }
             ],
             "body": {
               "mode": "raw",
@@ -320,8 +413,13 @@
             },
             "url": {
               "raw": "{{base_url}}/api/switching-requests",
-              "host": ["{{base_url}}"],
-              "path": ["api", "switching-requests"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "switching-requests"
+              ]
             }
           }
         },
@@ -341,9 +439,18 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-channel", "value": "B2B_PORTAL" },
-              { "key": "x-operator-id", "value": "AGENT-0042" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-channel",
+                "value": "B2B_PORTAL"
+              },
+              {
+                "key": "x-operator-id",
+                "value": "AGENT-0042"
+              }
             ],
             "body": {
               "mode": "raw",
@@ -351,8 +458,13 @@
             },
             "url": {
               "raw": "{{base_url}}/api/switching-requests",
-              "host": ["{{base_url}}"],
-              "path": ["api", "switching-requests"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "switching-requests"
+              ]
             }
           }
         },
@@ -378,8 +490,14 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-channel", "value": "B2C_PORTAL" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-channel",
+                "value": "B2C_PORTAL"
+              }
             ],
             "body": {
               "mode": "raw",
@@ -387,8 +505,13 @@
             },
             "url": {
               "raw": "{{base_url}}/api/switching-requests",
-              "host": ["{{base_url}}"],
-              "path": ["api", "switching-requests"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "switching-requests"
+              ]
             }
           }
         }
@@ -421,8 +544,14 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/switching-requests/{{seededRequestId}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "switching-requests", "{{seededRequestId}}"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "switching-requests",
+                "{{seededRequestId}}"
+              ]
             }
           }
         },
@@ -448,8 +577,14 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/switching-requests/SII-REQ-DOES-NOT-EXIST-0000",
-              "host": ["{{base_url}}"],
-              "path": ["api", "switching-requests", "SII-REQ-DOES-NOT-EXIST-0000"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "switching-requests",
+                "SII-REQ-DOES-NOT-EXIST-0000"
+              ]
             }
           }
         }
@@ -479,13 +614,22 @@
             }
           ],
           "request": {
-            "auth": { "type": "noauth" },
+            "auth": {
+              "type": "noauth"
+            },
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/supply-points/12345678901234/eligibility",
-              "host": ["{{base_url}}"],
-              "path": ["api", "supply-points", "12345678901234", "eligibility"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "supply-points",
+                "12345678901234",
+                "eligibility"
+              ]
             }
           }
         },
@@ -503,13 +647,27 @@
             }
           ],
           "request": {
-            "auth": { "type": "noauth" },
+            "auth": {
+              "type": "noauth"
+            },
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer not.a.jwt" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.jwt"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/api/supply-points/12345678901234/eligibility",
-              "host": ["{{base_url}}"],
-              "path": ["api", "supply-points", "12345678901234", "eligibility"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "supply-points",
+                "12345678901234",
+                "eligibility"
+              ]
             }
           }
         }
