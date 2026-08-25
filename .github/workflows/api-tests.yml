@@ -230,9 +230,14 @@ jobs:
       - name: Run collection
         working-directory: qa-automation/postman
         run: |
-          FOLDERS="--folder '00 — Auth' --folder '10 — Eligibility' --folder '40 — Gateway policies'"
+          # Newman matches --folder names EXACTLY, and a name that does not
+          # exist fails the whole run with "runtime~extractRunnableItems:
+          # Invalid entrypoint" — which names neither the folder it could not
+          # find nor the collection it looked in. These strings must stay in
+          # step with the folder names inside switching-api.postman_collection.json.
+          FOLDERS="--folder '00 — Auth' --folder '10 — Eligibility (read-only, safe for prod smoke)' --folder '40 — Gateway policies'"
           if [ "${{ inputs.run_writes }}" = "true" ]; then
-            FOLDERS="$FOLDERS --folder '20 — Submit' --folder '30 — Status'"
+            FOLDERS="$FOLDERS --folder '20 — Submit (writes — dev/test only)' --folder '30 — Status'"
           fi
 
           eval newman run switching-api.postman_collection.json \
