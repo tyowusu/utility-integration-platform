@@ -28,6 +28,48 @@ function fn() {
         validCodiceFiscale: 'RSSMRA80A01H501U',
         validPartitaIva: '12345678901',
 
+        /*
+         * Inadmissibility cases for the dynamic Scenario Outline in
+         * submit-switching-request.feature.
+         *
+         * Defined here rather than in that feature's Background because
+         * Karate resolves a dynamic Examples expression when it expands the
+         * outline — before the Background has run for that scenario — so a
+         * variable defined there is not yet in scope and the outline fails
+         * with ReferenceError: "inadmissibleCases" is not defined.
+         *
+         * Dates are computed at run time relative to today, never hardcoded:
+         * a fixture containing a literal date passes for a few weeks and then
+         * fails permanently for calendar reasons, which teaches the team that
+         * red is normal.
+         */
+        inadmissibleCases: (function () {
+            var LocalDate = Java.type('java.time.LocalDate');
+            var firstOfMonthIn = function (months) {
+                return LocalDate.now().plusMonths(months).withDayOfMonth(1).toString();
+            };
+            var CF = 'RSSMRA80A01H501U';
+            var PIVA = '12345678901';
+            return [
+                { description: 'Mid-month effective date',
+                  pdr: '12345678901234', customerType: 'RESIDENTIAL',
+                  fiscalCode: CF,
+                  effectiveDate: LocalDate.now().plusMonths(2).withDayOfMonth(15).toString() },
+
+                { description: 'Business customer presenting a codice fiscale',
+                  pdr: '12345678901234', customerType: 'BUSINESS',
+                  fiscalCode: CF, effectiveDate: firstOfMonthIn(2) },
+
+                { description: 'Residential customer presenting a partita IVA',
+                  pdr: '12345678901234', customerType: 'RESIDENTIAL',
+                  fiscalCode: PIVA, effectiveDate: firstOfMonthIn(2) },
+
+                { description: 'Effective date in the past',
+                  pdr: '12345678901234', customerType: 'RESIDENTIAL',
+                  fiscalCode: CF, effectiveDate: firstOfMonthIn(-2) }
+            ];
+        })(),
+
         // Populated below.
         baseUrl: null,
         clientId: java.lang.System.getProperty('client.id') || '',

@@ -23,10 +23,16 @@ Feature: Switching eligibility pre-flight
     Given path 'supply-points', validPdr, 'eligibility'
     When method get
     Then status 200
+    # An exact match, not `contains`. A field appearing that should not be
+    # there is as much a contract break as one going missing — this response
+    # is served to three consumer front ends, and an accidental addition is
+    # how internal detail leaks into a browser. Adding a field to the API
+    # should mean deliberately adding it here too.
     And match response ==
       """
       {
         pdr: '#(validPdr)',
+        evaluatedAt: '#string',
         earliestAvailableEffectiveDate: '#string',
         currentWindow: {
           deadlineDay: '#number',
@@ -34,6 +40,7 @@ Feature: Switching eligibility pre-flight
           note: '#string'
         },
         availableDates: '#[_ > 0]',
+        requestedDateAssessment: '##object',
         regulatoryBasis: '#string'
       }
       """

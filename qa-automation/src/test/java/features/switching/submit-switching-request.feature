@@ -41,27 +41,11 @@ Feature: Submit a switching request (cambio venditore)
     * def uniquePdr = function(){ return '9' + java.lang.System.currentTimeMillis().toString().slice(-13) }
     * configure headers = accessToken ? { Authorization: 'Bearer ' + accessToken, 'x-channel': 'B2C_PORTAL' } : { 'x-channel': 'B2C_PORTAL' }
 
-    # Inadmissibility cases, built at runtime so the dates never go stale.
-    * def inadmissibleCases =
-      """
-      [
-        { description: 'Mid-month effective date',
-          pdr: '12345678901234', customerType: 'RESIDENTIAL',
-          fiscalCode: '#(validCodiceFiscale)', effectiveDate: '#(midMonthDate)' },
-
-        { description: 'Business customer presenting a codice fiscale',
-          pdr: '12345678901234', customerType: 'BUSINESS',
-          fiscalCode: '#(validCodiceFiscale)', effectiveDate: '#(validEffectiveDate)' },
-
-        { description: 'Residential customer presenting a partita IVA',
-          pdr: '12345678901234', customerType: 'RESIDENTIAL',
-          fiscalCode: '#(validPartitaIva)', effectiveDate: '#(validEffectiveDate)' },
-
-        { description: 'Effective date in the past',
-          pdr: '12345678901234', customerType: 'RESIDENTIAL',
-          fiscalCode: '#(validCodiceFiscale)', effectiveDate: '#(pastDate)' }
-      ]
-      """
+    # inadmissibleCases lives in karate-config.js, not here. Karate resolves a
+    # dynamic Examples expression when it expands the outline, before this
+    # Background has run — so defining it here yields
+    # ReferenceError: "inadmissibleCases" is not defined and the outline never
+    # executes a single case.
 
   # ---------------------------------------------------------------------------
   # Happy path
@@ -123,31 +107,19 @@ Feature: Submit a switching request (cambio venditore)
   # depend on today's date, and a static table would either hardcode dates that
   # expire or omit the date-sensitive cases entirely — which are the cases most
   # worth having.
-  Scenario Outline: <description> is rejected as not admissible
-    Given path 'switching-requests'
-    And request
-      """
-      {
-        "pdr": "<pdr>",
-        "customerType": "<customerType>",
-        "fiscalCode": "<fiscalCode>",
-        "effectiveDate": "<effectiveDate>"
-      }
-      """
-    When method post
-    # 422 rather than 400: the request is well-formed, the regulation refuses
-    # it. The portals branch on this — a 400 is retried after correction, a 422
-    # is surfaced to the customer as a business outcome.
-    Then status 422
-    And match response.error.code == '#string'
-    And match response.error.correlationId == '#string'
-    # The reason must be specific enough for the portal to render it. "Request
-    # failed" produces a contact-centre call; "the window for 1 August closed
-    # on 10 July" does not.
-    And match response.error.message != 'An unexpected error occurred.'
-
-    Examples:
-      | inadmissibleCases |
+  Scenario: Requests the regulation refuses are rejected with 422
+    * if (!accessToken) karate.abort()
+    # Data-driven: passing the array to karate.call runs the helper once per
+    # case, so a new inadmissibility rule is a new entry in karate-config.js
+    # rather than a new scenario here.
+    #
+    # Not a dynamic Scenario Outline. Karate resolves the Examples expression
+    # when it expands the outline, and neither a Background def nor a
+    # karate-config.js value is in scope then — both give
+    # ReferenceError: "inadmissibleCases" is not defined, and the outline runs
+    # no cases at all while looking like three passing scenarios.
+    * def results = karate.call('classpath:helpers/submit-inadmissible.feature', inadmissibleCases)
+    * match results == '#[4]'
 
   # ---------------------------------------------------------------------------
   # Contract violations — 400, caught by APIkit before any business logic
