@@ -204,7 +204,7 @@ jobs:
         run: |
           mvn --batch-mode --no-transfer-progress \
             test-compile failsafe:integration-test failsafe:verify \
-            -DexcludedGroups=requires-downstream \
+            -DexcludedGroups=requires-downstream,throttling \
             -Dapi.base.url=${BASE_URL} \
             -Daccess.token=${{ steps.token.outputs.token }}
 
@@ -486,6 +486,19 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      - name: Obtain access token
+        id: token
+        run: |
+          TOKEN=$(curl -sk -X POST "${TOKEN_URL}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=${{ secrets.GATEWAY_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.GATEWAY_CLIENT_SECRET }}" \
+            -d "audience=${{ needs.resolve.outputs.audience }}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Throttling scenarios
         working-directory: qa-automation
         run: |
@@ -500,11 +513,26 @@ jobs:
             -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
             -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
 
+      # The REST Assured throttling tests live here too. They burst against the
+      # same global limit, so running them in the parallel job throttled every
+      # other suite — and sizing them for a 30/minute limit made them fail
+      # against 200/minute claiming throttling was absent when it was merely
+      # out of reach.
+      - name: Throttling integration tests
+        if: always()
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress \
+            test-compile failsafe:integration-test failsafe:verify \
+            -Dgroups=throttling \
+            -Dapi.base.url=${BASE_URL} \
+            -Daccess.token=${{ steps.token.outputs.token }}
+
       - name: Publish results
         if: always()
         uses: mikepenz/action-junit-report@v4
         with:
-          report_paths: 'qa-automation/target/surefire-reports/*.xml'
+          report_paths: 'qa-automation/target/surefire-reports/*.xml,qa-automation/target/failsafe-reports/*.xml'
           check_name: 'Rate limiting — ${{ inputs.environment }}'
           fail_on_failure: true
 
