@@ -171,13 +171,8 @@ jobs:
       # These suites are independent. Nothing about a 504 from an absent
       # downstream mock says anything about whether the gateway is governing
       # traffic, so one must not suppress the other.
-      # Authenticates as GATEWAY_CLIENT_*, not API_CLIENT_*. This suite bursts
-      # deliberately past the rate limit, and the limit is keyed per client —
-      # on a shared client the burst poisoned every suite that followed and
-      # every suite that ran first ate the quota this one needs. A separate
-      # client application with its own contract on each API instance is what
-      # makes the suites independent; the cooldowns this replaces only hid the
-      # coupling, at the cost of minutes of sleeping per run.
+      # Excludes the throttling scenarios — those run in their own job, last.
+      # See the `throttling` job below for why.
       - name: Gateway policy suite
         if: ${{ !cancelled() && inputs.run_gateway_policies }}
         working-directory: qa-automation
@@ -187,8 +182,8 @@ jobs:
             -Dkarate.env=${{ inputs.environment }} \
             -Dapi.base.url=${BASE_URL} \
             -Dtoken.url=${TOKEN_URL} \
-            -Dclient.id=${{ secrets.GATEWAY_CLIENT_ID }} \
-            -Dclient.secret=${{ secrets.GATEWAY_CLIENT_SECRET }} \
+            -Dclient.id=${{ secrets.API_CLIENT_ID }} \
+            -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
             -Dapi.audience=${{ needs.resolve.outputs.audience }} \
             -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
             -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
@@ -455,3 +450,61 @@ jobs:
             qa-automation/target/jmeter/results/
             qa-automation/target/jmeter/reports/
           retention-days: 30
+
+  # ===========================================================================
+  # THROTTLING — RUNS LAST, ALONE
+  # ===========================================================================
+  # The rate limit is GLOBAL per API instance, not keyed per client. Measured,
+  # not assumed: burst as one client, then immediately call as a second with a
+  # different token and its own approved contract, and the second gets 429.
+  #
+  # A separate client application therefore buys nothing, and cooldowns only
+  # move the problem around. The only arrangement that works is for the burst
+  # to happen when nothing is left to disturb — so this job needs every other
+  # job and runs after all of them.
+  #
+  # It still uses its own client identity (GATEWAY_CLIENT_*). That is for
+  # attribution rather than isolation: it keeps load generation off the
+  # credentials the functional suites use, which matters when reading API
+  # Manager analytics, but it does not stop the burst throttling the instance.
+  throttling:
+    name: Rate limiting (runs last, exhausts the quota)
+    needs: [resolve, functional, functional-mocks, postman, performance]
+    if: ${{ !cancelled() && inputs.run_gateway_policies }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Throttling scenarios
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress test \
+            -Dtest=SwitchingFunctionalTest#throttling \
+            -Dkarate.env=${{ inputs.environment }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
+            -Dclient.id=${{ secrets.GATEWAY_CLIENT_ID }} \
+            -Dclient.secret=${{ secrets.GATEWAY_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }} \
+            -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
+            -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
+
+      - name: Publish results
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'qa-automation/target/surefire-reports/*.xml'
+          check_name: 'Rate limiting — ${{ inputs.environment }}'
+          fail_on_failure: true
+

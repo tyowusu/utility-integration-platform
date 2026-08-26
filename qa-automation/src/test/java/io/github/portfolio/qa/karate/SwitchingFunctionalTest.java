@@ -69,10 +69,36 @@ class SwitchingFunctionalTest {
                 .relativeTo(getClass());
     }
 
+    /**
+     * Gateway policy checks that do not generate load: credentials, JWT
+     * validation, transport. Safe to run alongside anything else.
+     */
     @Karate.Test
     Karate gateway() {
         return Karate.run("classpath:features/gateway")
-                .tags("@gateway")
+                .tags("@gateway", "~@policy-rate-limit")
+                .relativeTo(getClass());
+    }
+
+    /**
+     * The throttling scenarios, separated because they exhaust the quota for
+     * <em>everything</em>.
+     *
+     * <p>The rate limit is global per API instance, not keyed per client. That
+     * was measured, not assumed: bursting as one client and immediately
+     * calling as a second — different token, different approved contract —
+     * returns 429 to the second client. A separate client application
+     * therefore buys no isolation at all.
+     *
+     * <p>So this runs as the final CI job, after every other suite has
+     * finished. Nothing needs a cooldown when nothing follows. Running it
+     * anywhere earlier throttles whatever comes next, and those failures look
+     * like defects in contracts, schemas or policies — anywhere but here.
+     */
+    @Karate.Test
+    Karate throttling() {
+        return Karate.run("classpath:features/gateway")
+                .tags("@gateway", "@policy-rate-limit")
                 .relativeTo(getClass());
     }
 }

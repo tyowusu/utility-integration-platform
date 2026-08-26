@@ -927,32 +927,44 @@ filter. Nothing else needs to change.
 > round trip first. That is an application ordering question, not a test defect,
 > and it only became visible once the suite ran against a deployed environment.
 
-### 13.3 Why the gateway suite has its own client application
+### 13.3 The rate limit is global, so the burst must run last
 
-The throttling scenario bursts deliberately past the rate limit. The limit is
-keyed **per client**, so on a shared client that burst exhausts the quota every
-other suite needs — and whatever runs first eats the quota the burst needs to
-be provable. Symptoms look like defects elsewhere entirely: contract tests
-failing 5/5 on 429, a gateway suite at 8/11, neither having anything to do with
-contracts or policies.
+The throttling scenario bursts deliberately past the rate limit. The obvious
+assumption — and the one this guide made — is that the limit is keyed per
+client, so giving that suite its own client application would isolate it.
 
-Cooldowns between suites do work, and they were the first fix here: four
-`sleep 65` steps and three serialised jobs. They also added minutes of
-deliberate sleeping per run and were fragile — any new suite reintroduced the
-collision.
+**It is not.** Measure it before designing around it:
 
-Registering a second client application for the gateway suite alone removes the
-coupling instead of hiding it. Request access for it on **every** API instance
-and approve the contract, exactly as for the QA client, then point only that
-suite at it (`GATEWAY_CLIENT_ID` / `GATEWAY_CLIENT_SECRET`).
+```
+QA client before the burst:            200
+Burst of 260 as a *different* client:  199 × 200, 61 × 429
+QA client immediately afterwards:      429, 429, 429
+```
 
-> **A second client is necessary but not sufficient.** The other suites still
-> collide with each other: `GatewaySecurityIT` and `SwitchingContractIT`
-> together approach 30 requests a minute, and across smoke, functional, Newman
-> and the informational job the shared client issues 50–60 per run. At the
-> 30/minute this guide originally suggested they throttle each other with no
-> burst involved at all. Raise the limit — 200/minute leaves real headroom —
-> and size the burst to the new limit.
+A second client, with its own token and its own approved contract on the same
+instance, is throttled by a burst it took no part in. The limit is global per
+API instance. A separate client application buys **no isolation**, and
+cooldowns between suites only move the problem around — any new suite
+reintroduces the collision.
+
+Two things follow.
+
+**Raise the limit.** At the 30/minute this guide originally suggested, the
+ordinary suites throttle each other with no burst involved at all:
+`GatewaySecurityIT` and `SwitchingContractIT` together approach 30 requests a
+minute, and across smoke, functional, Newman and the informational job the
+suites issue 50–60 per run. 200/minute leaves real headroom and lets them run
+in parallel.
+
+**Run the burst last, in its own job.** Nothing needs a cooldown when nothing
+follows. Anywhere earlier and it throttles whatever comes next, producing
+failures that look like defects in contracts, schemas or policies — anywhere
+but where the cause actually is.
+
+> If your policy version exposes an **Identifier** expression, setting it to
+> the token's client-id claim gives per-client buckets and removes the
+> ordering constraint. Verify with the burst-then-call test above rather than
+> trusting the field's presence; ours did not behave that way.
 
 ### 13.4 Generating the burst concurrently
 

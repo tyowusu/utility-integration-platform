@@ -155,11 +155,13 @@ Feature: API Manager gateway policy enforcement
     # limiting is broken" from a developer machine and would have gone quietly
     # meaningless the day a runner got slower.
     #
-    # This suite also authenticates as its OWN client application, separate
-    # from every other suite. The burst exists to exhaust a quota and the limit
-    # is keyed per client, so sharing one meant the burst poisoned whatever ran
-    # next while whatever ran first ate the quota this scenario needs. The
-    # separate client removes that coupling; the cooldowns only hid it.
+    # THE LIMIT IS GLOBAL PER API INSTANCE, NOT PER CLIENT. Measured, not
+    # assumed: burst as one client, then immediately call as a second with a
+    # different token and its own approved contract, and the second gets 429.
+    # A separate client application buys no isolation, and cooldowns only move
+    # the problem around. This scenario therefore runs in its own CI job,
+    # after every other suite — nothing needs protecting from a burst that
+    # happens when nothing is left to run.
     * def Burst = Java.type('io.github.portfolio.qa.support.LoadBurst')
     * def target = baseUrl + '/supply-points/' + validPdr + '/eligibility'
     * def counts = Burst.fire(target, accessToken, 300, 25)
