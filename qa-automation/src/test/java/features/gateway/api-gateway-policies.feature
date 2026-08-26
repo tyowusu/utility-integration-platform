@@ -144,25 +144,33 @@ Feature: API Manager gateway policy enforcement
   @policy-rate-limit
   Scenario: Sustained traffic above the configured limit is throttled with 429
     * if (!accessToken) karate.abort()
-    # The policy in the test environment is deliberately set low enough to be
-    # provable inside a CI run. Proving a production-grade limit would require
-    # generating production-grade load from a CI runner, which measures the
-    # runner rather than the gateway.
-    * def burst =
-      """
-      function() {
-        var statuses = [];
-        for (var i = 0; i < 40; i++) {
-          var r = karate.call('classpath:helpers/single-eligibility-call.feature',
-                              { baseUrl: baseUrl, pdr: validPdr, token: accessToken });
-          statuses.push(r.status);
-        }
-        return statuses;
-      }
-      """
-    * def statuses = burst()
-    * def throttled = karate.filter(statuses, function(s){ return s == 429 })
-    And assert throttled.length > 0
+    # 300 requests against a 200/minute limit, fired concurrently.
+    #
+    # Concurrency is the point, not an optimisation. A sequential loop is
+    # bounded by round-trip time rather than by the server: at ~430ms from a
+    # laptop that is ~140 requests/minute, so a 200/minute limit cannot be
+    # exceeded at all, whatever the loop count. The same loop reached ~110ms
+    # per request on a CI runner near the region and tripped the limit easily.
+    # The assertion was therefore decided by where it ran — it reported "rate
+    # limiting is broken" from a developer machine and would have gone quietly
+    # meaningless the day a runner got slower.
+    #
+    # This suite also authenticates as its OWN client application, separate
+    # from every other suite. The burst exists to exhaust a quota and the limit
+    # is keyed per client, so sharing one meant the burst poisoned whatever ran
+    # next while whatever ran first ate the quota this scenario needs. The
+    # separate client removes that coupling; the cooldowns only hid it.
+    * def Burst = Java.type('io.github.portfolio.qa.support.LoadBurst')
+    * def target = baseUrl + '/supply-points/' + validPdr + '/eligibility'
+    * def counts = Burst.fire(target, accessToken, 300, 25)
+    * print 'burst status distribution:', counts
+    # The distribution is printed, not just asserted on, because "no 429s" has
+    # two very different causes — a policy that is absent, and a burst that
+    # never reached the limit — and the counts tell them apart at a glance.
+    And assert counts['429'] > 0
+    # Every request must be accounted for. A burst that silently failed at the
+    # transport layer would otherwise look like a burst that was not throttled.
+    And assert (counts['200'] || 0) + (counts['429'] || 0) == 300
     # A 429 must be an honest refusal, not a disguised failure: the client is
     # expected to back off and retry, so anything other than 429 (a 500, say)
     # would send the portal down a retry path that makes the overload worse.

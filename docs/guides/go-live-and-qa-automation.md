@@ -927,7 +927,62 @@ filter. Nothing else needs to change.
 > round trip first. That is an application ordering question, not a test defect,
 > and it only became visible once the suite ran against a deployed environment.
 
-### 13.3 Fixtures that do not expire
+### 13.3 Why the gateway suite has its own client application
+
+The throttling scenario bursts deliberately past the rate limit. The limit is
+keyed **per client**, so on a shared client that burst exhausts the quota every
+other suite needs — and whatever runs first eats the quota the burst needs to
+be provable. Symptoms look like defects elsewhere entirely: contract tests
+failing 5/5 on 429, a gateway suite at 8/11, neither having anything to do with
+contracts or policies.
+
+Cooldowns between suites do work, and they were the first fix here: four
+`sleep 65` steps and three serialised jobs. They also added minutes of
+deliberate sleeping per run and were fragile — any new suite reintroduced the
+collision.
+
+Registering a second client application for the gateway suite alone removes the
+coupling instead of hiding it. Request access for it on **every** API instance
+and approve the contract, exactly as for the QA client, then point only that
+suite at it (`GATEWAY_CLIENT_ID` / `GATEWAY_CLIENT_SECRET`).
+
+> **A second client is necessary but not sufficient.** The other suites still
+> collide with each other: `GatewaySecurityIT` and `SwitchingContractIT`
+> together approach 30 requests a minute, and across smoke, functional, Newman
+> and the informational job the shared client issues 50–60 per run. At the
+> 30/minute this guide originally suggested they throttle each other with no
+> burst involved at all. Raise the limit — 200/minute leaves real headroom —
+> and size the burst to the new limit.
+
+### 13.4 Generating the burst concurrently
+
+The burst must be **concurrent**, not a sequential loop, and this is not an
+optimisation.
+
+Sequential load is bounded by round-trip time rather than by the server. At
+~430ms per request from a developer machine that is ~140 requests per minute,
+so a 200/minute limit cannot be exceeded at all, whatever the loop count. The
+same loop reached ~110ms per request on a CI runner near the region and tripped
+the limit easily. The assertion was therefore decided by *where it ran*: it
+reported "rate limiting is broken" from a laptop, and would have gone quietly
+meaningless the day a runner got slower.
+
+`LoadBurst.fire(url, token, count, concurrency)` issues the requests through
+`HttpClient.sendAsync` and returns a status histogram. Assert on `429` being
+present, and also that the counts sum to the request total — a burst that
+failed at the transport layer otherwise looks exactly like a burst that was
+never throttled.
+
+Against a 200/minute limit, 300 requests at concurrency 25 gives:
+
+```
+burst status distribution: { "200": 197, "429": 103 }
+```
+
+which is both a passing assertion and a direct measurement of the policy. The
+suite went from 125 seconds to 8.
+
+### 13.5 Fixtures that do not expire
 
 Every date is computed at run time relative to today. None is hardcoded.
 
@@ -946,7 +1001,7 @@ the 10th, because on those days the scenario it describes does not exist.
 Skipping is honest; rewriting the assertion to pass on every date would test
 nothing.
 
-### 13.4 Worth reading for the reasoning
+### 13.6 Worth reading for the reasoning
 
 - `duplicate-request-returns-200-not-a-second-sii-submission` — the load-bearing
   assertion is `verify-call ... times="0"`. Asserting only on the response body
