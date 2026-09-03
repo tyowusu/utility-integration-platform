@@ -39,6 +39,10 @@ another 1–2, mostly waiting on builds.
 | 13 | Run the functional suites | Karate, REST Assured, Newman results | — |
 | 14 | Run the gateway policy suite | proof the policies bind and enforce | — |
 | 15 | Run the JMeter peak-day profile | a performance regression baseline | — |
+| **G. Infrastructure as code** ||||
+| 18 | Terraform the Anypoint control plane | API instances, policies and clients declared in Git | reproducible environments; drift you can see |
+| 19 | Host the mock services on OpenShift | a public URL for SII, Salesforce, billing and identity | the 10 tests tagged `@requires-downstream`; the async outcome path |
+| 20 | Reconcile the mocks with ArgoCD | a Git-driven change loop you can test against | proving deployed state matches declared state |
 
 Everything referenced exists in the repository. Where a step needs a value only
 you can supply, the guide says where to find it.
@@ -1202,6 +1206,177 @@ finding.
 
 ---
 
+# Part G — Infrastructure as code
+
+These three tools are not decoration on a MuleSoft project. Each one closes a
+gap this guide has already run into.
+
+- **Terraform** — every API instance, policy and client application in Part C
+  was created by clicking. Nothing records what the settings *should* be, so
+  the only way to learn that the rate limit was global rather than per-client
+  was to run an experiment against a live gateway. Declared configuration
+  turns that into something you can read.
+- **OpenShift** — the mocks have to live somewhere the Mule app can reach.
+  The app runs on CloudHub, in public cloud, so a laptop cluster is no use to
+  it: the mock needs a **public URL**. This is the constraint that decides the
+  whole approach.
+- **ArgoCD** — once the mocks are manifests in Git, something has to
+  reconcile Git with the cluster. That loop is directly testable, which makes
+  it a QA concern and not only a platform one.
+
+---
+
+## 18. Terraform for the Anypoint control plane
+
+### 18.1 What it should own
+
+Everything in step 8 that you created by hand:
+
+| Resource | Why it belongs in code |
+|---|---|
+| API instances per environment | The instance ID is referenced by `api.id` at deploy time. Recreating one by hand changes the ID and breaks autodiscovery silently — the app starts and returns an empty 503 on every request. |
+| Policies and their configuration | The rate limit value is load-bearing: burst sizes in two test suites are tied to it. A number that lives only in a web form will drift away from the tests that depend on it. |
+| Client applications and contracts | Contracts are per instance. Approving one in dev grants nothing in test, which cost an afternoon when only the QA client had been approved. |
+| SLA tiers | Named in the guide, referenced by the suites. |
+
+### 18.2 Install
+
+```bash
+brew install terraform
+```
+
+The Anypoint provider is community-maintained, not published by MuleSoft.
+Read that as: it lags the platform, and some resources are unsupported. Check
+what it covers before designing around it.
+
+```hcl
+terraform {
+  required_providers {
+    anypoint = {
+      source  = "mulesoft-anypoint/anypoint"
+      version = "~> 1.6"
+    }
+  }
+}
+
+provider "anypoint" {
+  client_id     = var.connected_app_client_id
+  client_secret = var.connected_app_client_secret
+  org_id        = var.org_id
+}
+```
+
+### 18.3 The exercise worth doing
+
+Do **not** start by writing resources. Start by importing what exists:
+
+```bash
+terraform import anypoint_api.dev <org_id>/<env_id>/21117824
+```
+
+Then run `terraform plan` and read what it wants to change. That diff is the
+answer to "does the platform match what we think it is?", and it is the first
+time this project has been able to ask that question at all.
+
+> **Expect the import to be incomplete.** The provider will not cover every
+> policy attribute. Where it cannot, say so in the code with a comment rather
+> than pretending the resource is fully managed — a Terraform file that
+> silently omits a setting is the infrastructure equivalent of a test that
+> passes without asserting anything.
+
+### 18.4 What to be able to say about it
+
+That the value of declaring this is not automation — you deploy an API
+instance roughly once. It is **drift detection**. `terraform plan` answering
+"no changes" is a claim about the live platform that nobody could make before.
+
+---
+
+## 19. OpenShift for the mock services
+
+### 19.1 The constraint that decides everything
+
+The Mule application runs on CloudHub 2.0. For it to call a mock, the mock
+needs a **publicly resolvable URL**. That single fact rules out the obvious
+choices:
+
+| Option | Verdict |
+|---|---|
+| OpenShift Local (CRC) | **Not viable on 8 GB of RAM** — CRC alone wants 9 GB free for its VM. Do not start the download. |
+| kind / minikube on the laptop | Runs comfortably, but the cluster is unreachable from CloudHub. Fine for learning Kubernetes; useless as a mock host. |
+| **Red Hat Developer Sandbox** | Free, hosted, gives a public **Route**. This is the one that works. Time-limited and renewable; quota is small but a WireMock pod is small too. |
+
+### 19.2 What to deploy
+
+One WireMock instance serving four origins — SII, Salesforce, billing and the
+identity provider — distinguished by path, with the stub mappings mounted from
+a ConfigMap.
+
+The stubs are test data, so they belong in `qa-automation/`, beside the suites
+that depend on them, not in an infrastructure directory.
+
+### 19.3 Wire it in
+
+Point the placeholder hosts in `src/main/resources/properties/test.yaml` at
+the Route:
+
+```yaml
+sii:
+  host: "switching-mocks-<your-namespace>.apps.<cluster>.openshiftapps.com"
+```
+
+Then redeploy and drop the `@requires-downstream` tag — from the eight Karate
+scenarios, the two REST Assured tests, and the two Postman folders. If they
+pass, the tags come out permanently, the informational CI job is deleted, and
+§13.2 goes with it.
+
+> **A mock that always returns 200 is worse than no mock.** These stand in for
+> a regulated counterparty with a 120-second timeout. Give them the failure
+> modes the real thing has — slow responses, SOAP faults, malformed XML —
+> or the suite will prove only that the happy path works, which nobody
+> doubted.
+
+---
+
+## 20. ArgoCD and the GitOps loop
+
+### 20.1 Namespace-scoped, because you will not have cluster-admin
+
+The Developer Sandbox gives you a namespace, not a cluster. ArgoCD's standard
+install wants cluster-wide CRDs and will fail. Use the **namespace-scoped**
+install, which manages applications in its own namespace only.
+
+Check the quota before you start: ArgoCD runs several pods, and the sandbox's
+memory allowance is not generous.
+
+### 20.2 The loop
+
+```
+qa-automation/mocks/  →  Git  →  ArgoCD  →  OpenShift  →  Mule app calls it
+```
+
+Change a stub mapping, commit, and ArgoCD reconciles it into the cluster. No
+`oc apply`, no clicking.
+
+### 20.3 Why this is a QA concern and not only a platform one
+
+Two testable claims come out of it, and both matter for the role:
+
+- **Deployed state matches declared state.** ArgoCD reports `Synced` or
+  `OutOfSync`. That is a continuously-evaluated assertion about an
+  environment, which is exactly what this project lacked when a policy value
+  lived only in a web form.
+- **A stub change reaches the tests.** Edit a mapping to return a SOAP fault,
+  commit, wait for sync, and watch the corresponding scenario change its
+  result. If it does not, either the sync did not happen or the test was never
+  reading the mock — and you now have a way to tell those apart.
+
+> The second one is the interesting exercise. Build it, then break it
+> deliberately and confirm the test notices. A GitOps pipeline nobody has
+> tested a failure through is a green dashboard, not a control.
+
+---
+
 ## 17. What this maps to on a job description
 
 For the API QA Engineer (MuleSoft) posting:
@@ -1221,6 +1396,9 @@ For the API QA Engineer (MuleSoft) posting:
 | Troubleshoot integration issues across systems | Step 16; failure messages written to name the likely cause |
 | CI/CD tooling — Jenkins, Azure DevOps, GitHub Actions, GitLab CI | GitHub Actions here; the build-once-promote-the-binary model transfers unchanged |
 | Java, Python, JavaScript | Java (REST Assured, JWT minting), JavaScript (Karate config, Postman), Groovy (JMeter, SoapUI) |
+| Hands-on Terraform | Step 18 — the Anypoint control plane declared, and `terraform plan` as drift detection |
+| Hands-on OpenShift | Step 19 — the mock services, hosted where CloudHub can actually reach them |
+| ArgoCD / GitOps-based deployments | Step 20 — stub changes reconciled from Git, and a deliberate break to prove the loop is live |
 
 The thing worth being able to talk about in an interview is not the tool list —
 it is 14.2. Most candidates can describe a rate-limiting policy. Fewer can
