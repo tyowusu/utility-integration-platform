@@ -161,21 +161,6 @@ jobs:
             -Dclient.id=${{ secrets.API_CLIENT_ID }} \
             -Dclient.secret=${{ secrets.API_CLIENT_SECRET }} \
             -Dapi.audience=${{ needs.resolve.outputs.audience }}
-
-      # The gateway suite's throttling scenario deliberately bursts past the
-      # rate limit. The limit is per client per minute and every suite here
-      # authenticates as the same client, so without a cooldown the burst
-      # poisons whatever runs next, and whatever ran before eats the quota
-      # this suite needs for its own 200-expecting scenarios.
-      #
-      # This is not hypothetical: run 32868014923 had the gateway suite at
-      # 8/11 and every REST Assured test failing with "Expected status code
-      # <200> but was <429>" — none of which had anything to do with the
-      # gateway or the contracts.
-      - name: Wait out the rate-limit window
-        if: ${{ !cancelled() && inputs.run_gateway_policies }}
-        run: sleep 65
-
       # `!cancelled()`, because a step without it is skipped as soon as an earlier
       # step fails — and the full functional suite fails on any environment
       # whose Salesforce/SII/billing mocks do not resolve. That silently took
@@ -186,6 +171,8 @@ jobs:
       # These suites are independent. Nothing about a 504 from an absent
       # downstream mock says anything about whether the gateway is governing
       # traffic, so one must not suppress the other.
+      # Excludes the throttling scenarios — those run in their own job, last.
+      # See the `throttling` job below for why.
       - name: Gateway policy suite
         if: ${{ !cancelled() && inputs.run_gateway_policies }}
         working-directory: qa-automation
@@ -201,38 +188,23 @@ jobs:
             -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
             -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
 
-      # Same reason: the burst above just exhausted the window.
-      - name: Wait out the rate-limit window again
-        if: ${{ !cancelled() && inputs.run_writes }}
-        run: sleep 65
-
       - name: Contract and security integration tests
         if: ${{ !cancelled() && inputs.run_writes }}
         working-directory: qa-automation
         # Failsafe goals invoked directly rather than via `verify`, so the
         # Karate suites above are not re-run as a side effect of the lifecycle.
         #
-        # The two IT classes are invoked separately with a cooldown between
-        # them. Together they issue more than the rate limit allows inside one
-        # minute — GatewaySecurityIT passes 8/8 and SwitchingContractIT then
-        # fails 5/5 on 429, which reads as a contract regression and is
-        # nothing of the sort. Splitting the invocation keeps each class inside
-        # one window. A step-level cooldown cannot help here: both classes run
-        # inside a single Failsafe invocation.
+        # One invocation again. These two classes were split apart with a
+        # cooldown between them because together they exceeded a 30/minute
+        # limit — GatewaySecurityIT passed 8/8 and SwitchingContractIT then
+        # failed 5/5 on 429, which reads as a contract regression and was
+        # nothing of the sort. At 200/minute they fit comfortably, and the
+        # gateway suite's burst now runs as a different client entirely, so
+        # nothing upstream eats this step's quota.
         run: |
           mvn --batch-mode --no-transfer-progress \
             test-compile failsafe:integration-test failsafe:verify \
-            -Dit.test=GatewaySecurityIT \
-            -DexcludedGroups=requires-downstream \
-            -Dapi.base.url=${BASE_URL} \
-            -Daccess.token=${{ steps.token.outputs.token }}
-
-          sleep 65
-
-          mvn --batch-mode --no-transfer-progress \
-            failsafe:integration-test failsafe:verify \
-            -Dit.test=SwitchingContractIT \
-            -DexcludedGroups=requires-downstream \
+            -DexcludedGroups=requires-downstream,throttling \
             -Dapi.base.url=${BASE_URL} \
             -Daccess.token=${{ steps.token.outputs.token }}
 
@@ -272,8 +244,8 @@ jobs:
   # on the suite above.
   functional-mocks:
     name: Suites needing downstream mocks (informational)
-    needs: [resolve, functional]
-    if: ${{ !cancelled() && inputs.run_writes }}
+    needs: resolve
+    if: inputs.run_writes
     continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -369,12 +341,7 @@ jobs:
     # authenticate as the same client and share one rate-limit quota, so in
     # parallel they throttle each other and fail on 429s that belong to
     # neither suite.
-    needs: [resolve, functional-mocks]
-    # `needs` here orders the jobs; it must not also gate them. A failed need
-    # skips its dependents, and `functional` fails on any environment whose
-    # downstream mocks do not resolve — so gating on it silently stopped
-    # Newman and JMeter running at all. Order without gating.
-    if: ${{ !cancelled() }}
+    needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -430,8 +397,8 @@ jobs:
     name: JMeter peak-day profile
     # Serialised for the same reason, and more so: this job exists to
     # generate load, which is precisely what exhausts everyone else's quota.
-    needs: [resolve, postman]
-    if: ${{ !cancelled() && inputs.run_performance }}
+    needs: resolve
+    if: inputs.run_performance
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -483,3 +450,89 @@ jobs:
             qa-automation/target/jmeter/results/
             qa-automation/target/jmeter/reports/
           retention-days: 30
+
+  # ===========================================================================
+  # THROTTLING — RUNS LAST, ALONE
+  # ===========================================================================
+  # The rate limit is GLOBAL per API instance, not keyed per client. Measured,
+  # not assumed: burst as one client, then immediately call as a second with a
+  # different token and its own approved contract, and the second gets 429.
+  #
+  # A separate client application therefore buys nothing, and cooldowns only
+  # move the problem around. The only arrangement that works is for the burst
+  # to happen when nothing is left to disturb — so this job needs every other
+  # job and runs after all of them.
+  #
+  # It still uses its own client identity (GATEWAY_CLIENT_*). That is for
+  # attribution rather than isolation: it keeps load generation off the
+  # credentials the functional suites use, which matters when reading API
+  # Manager analytics, but it does not stop the burst throttling the instance.
+  throttling:
+    name: Rate limiting (runs last, exhausts the quota)
+    needs: [resolve, functional, functional-mocks, postman, performance]
+    if: ${{ !cancelled() && inputs.run_gateway_policies }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BASE_URL: ${{ inputs.environment == 'dev' && secrets.API_BASE_URL_DEV || inputs.environment == 'test' && secrets.API_BASE_URL_TEST || secrets.API_BASE_URL_PROD }}
+      TOKEN_URL: ${{ inputs.environment == 'dev' && secrets.TOKEN_URL_DEV || inputs.environment == 'test' && secrets.TOKEN_URL_TEST || secrets.TOKEN_URL_PROD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Obtain access token
+        id: token
+        run: |
+          TOKEN=$(curl -sk -X POST "${TOKEN_URL}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=${{ secrets.GATEWAY_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.GATEWAY_CLIENT_SECRET }}" \
+            -d "audience=${{ needs.resolve.outputs.audience }}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Throttling scenarios
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress test \
+            -Dtest=SwitchingFunctionalTest#throttling \
+            -Dkarate.env=${{ inputs.environment }} \
+            -Dapi.base.url=${BASE_URL} \
+            -Dtoken.url=${TOKEN_URL} \
+            -Dclient.id=${{ secrets.GATEWAY_CLIENT_ID }} \
+            -Dclient.secret=${{ secrets.GATEWAY_CLIENT_SECRET }} \
+            -Dapi.audience=${{ needs.resolve.outputs.audience }} \
+            -Dunapproved.client.id=${{ secrets.UNAPPROVED_CLIENT_ID }} \
+            -Dunapproved.client.secret=${{ secrets.UNAPPROVED_CLIENT_SECRET }}
+
+      # The REST Assured throttling tests live here too. They burst against the
+      # same global limit, so running them in the parallel job throttled every
+      # other suite — and sizing them for a 30/minute limit made them fail
+      # against 200/minute claiming throttling was absent when it was merely
+      # out of reach.
+      - name: Throttling integration tests
+        if: always()
+        working-directory: qa-automation
+        run: |
+          mvn --batch-mode --no-transfer-progress \
+            test-compile failsafe:integration-test failsafe:verify \
+            -Dgroups=throttling \
+            -Dapi.base.url=${BASE_URL} \
+            -Daccess.token=${{ steps.token.outputs.token }}
+
+      - name: Publish results
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'qa-automation/target/surefire-reports/*.xml,qa-automation/target/failsafe-reports/*.xml'
+          check_name: 'Rate limiting — ${{ inputs.environment }}'
+          fail_on_failure: true
+

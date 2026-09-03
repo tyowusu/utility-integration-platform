@@ -48,3 +48,24 @@ switching-process-api/
 
 # --- OS -------------------------------------------------------------------
 .DS_Store
+
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+# terraform.tfstate is the dangerous one. It is not a cache: it records the
+# real value of every attribute Terraform manages, including secrets, in
+# PLAINTEXT. A committed state file leaks the Connected App secret and every
+# client-application secret Terraform has read, and rewriting history does not
+# un-leak a credential that has been pushed.
+#
+# *.tfvars is where the inputs live for the same reason.
+#
+# .terraform.lock.hcl is deliberately NOT ignored — it pins provider versions
+# and belongs in Git, the same way a lockfile does.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log

@@ -146,13 +146,24 @@ jobs:
       # Publishing to Exchange makes the release an immutable, versioned,
       # discoverable artifact. A deployment can then be traced to a specific
       # Exchange version rather than to "whatever main looked like that day".
-      # Only on push/tag. Exchange versions are immutable, so republishing a
-      # version that already exists fails the build — which would make every
-      # manual re-dispatch fail at this step until someone bumped the pom.
-      # A dispatch is a redeploy, not a release; the jar is still uploaded as
-      # a run artifact below and the deploy jobs consume that, not Exchange.
+      # Tags only. Exchange versions are immutable: republishing a version that
+      # already exists fails with "An asset already exists with this version
+      # and published lifecycle state", so any event that can recur against an
+      # unchanged pom version will eventually fail here.
+      #
+      # `push` was tried first and is not narrow enough — the merge of #2 hit
+      # exactly this, because 1.0.4 had already been published by an earlier
+      # dispatch. Every merge to main would fail unless someone remembered to
+      # bump the version, which is a rule the pipeline should not depend on
+      # people following.
+      #
+      # Tags are the right boundary. Exchange is a release registry, and a tag
+      # is the only event here that means "this is a release". Merges and
+      # dispatches still deploy: the jar is uploaded as a run artifact below
+      # and the deploy jobs consume it with -Dmule.artifact, never resolving
+      # from Exchange.
       - name: Publish to Anypoint Exchange
-        if: github.event_name == 'push'
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           mvn --batch-mode --no-transfer-progress deploy -DskipTests \
             -Danypoint.orgId=${{ secrets.ANYPOINT_ORG_ID }}
