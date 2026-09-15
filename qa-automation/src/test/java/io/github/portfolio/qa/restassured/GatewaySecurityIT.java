@@ -182,6 +182,11 @@ class GatewaySecurityIT {
     // Throttling
     // ------------------------------------------------------------------
 
+    // Tagged so the blocking suite excludes it and the terminal CI job runs
+    // it. The rate limit is global per API instance, not per client, so a
+    // burst here throttles every other suite for the next minute — including
+    // suites using entirely different credentials. Measured, not assumed.
+    @Tag("throttling")
     @Test
     @Order(10)
     @DisplayName("Sustained load above the configured limit yields 429")
@@ -189,8 +194,14 @@ class GatewaySecurityIT {
         Assumptions.assumeFalse(validToken.isBlank(),
                 "No access token supplied — skipping throttling assertions.");
 
-        int requests = 60;
-        ExecutorService pool = Executors.newFixedThreadPool(10);
+        // Sized to the policy, and it has to be kept in step with it. 60
+        // requests proved a 30/minute limit; against the 200/minute the test
+        // environment now uses they cannot reach the threshold at all, and the
+        // test failed claiming throttling was absent when it was simply out of
+        // range. The message below says exactly that, which is what made the
+        // cause findable.
+        int requests = 300;
+        ExecutorService pool = Executors.newFixedThreadPool(25);
 
         try {
             List<Future<Integer>> futures = IntStream.range(0, requests)
@@ -231,6 +242,10 @@ class GatewaySecurityIT {
         }
     }
 
+    // Same tag: this one only asserts when the previous test has just
+    // exhausted the quota, so separating them would turn it into a permanent
+    // skip that reads as a pass.
+    @Tag("throttling")
     @Test
     @Order(11)
     @DisplayName("A throttled response is a clean refusal, not a truncated body")

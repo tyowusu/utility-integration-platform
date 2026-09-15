@@ -613,6 +613,17 @@
                   "    // traffic ungoverned, and nothing in the logs says so.",
                   "    pm.expect(pm.response.code, 'If 200, autodiscovery did not bind')",
                   "      .to.be.oneOf([400, 401, 403]);",
+                  "});",
+                  "",
+                  "pm.test('Refusal came from the gateway, not the application', function () {",
+                  "    // Precondition: without a refusal there is nothing to attribute. Checking",
+                  "    // the status first stops this passing on a 200 that has no error at all.",
+                  "    pm.expect(pm.response.code, 'not refused at all').to.be.oneOf([400, 401, 403]);",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body, 'refusal carries no error field').to.have.property('error');",
+                  "    // The application's error handler always includes error.correlationId.",
+                  "    // The gateway never does, so its absence proves which layer answered.",
+                  "    pm.expect(body).to.not.have.nested.property('error.correlationId');",
                   "});"
                 ]
               }

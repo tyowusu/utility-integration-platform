@@ -85,6 +85,8 @@ set_from_keychain API_CLIENT_ID                        uip-qa-client-id
 set_from_keychain API_CLIENT_SECRET                    uip-qa-client-secret
 set_from_keychain ANYPOINT_PLATFORM_CLIENT_SECRET_TEST  uip-test-env-secret
 set_from_keychain MULE_SECURE_KEY_TEST                  uip-test-secure-key
+set_from_keychain GATEWAY_CLIENT_ID                     uip-gateway-client-id
+set_from_keychain GATEWAY_CLIENT_SECRET                 uip-gateway-client-secret
 
 # MUnit runs locally in Anypoint Studio against its bundled licensed runtime.
 # In CI it is skipped unless MULESOFT_NEXUS_USERNAME is set, because the EE

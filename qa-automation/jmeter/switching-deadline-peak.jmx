@@ -146,10 +146,7 @@
 
         <ConstantThroughputTimer guiclass="TestBeanGUI" testclass="ConstantThroughputTimer" testname="Pace reads" enabled="true">
           <intProp name="calcMode">2</intProp>
-          <doubleProp>
-            <name>throughput</name>
-            <value>3000.0</value>
-          </doubleProp>
+          <stringProp name="throughput">${__P(read.rate.per.min,3000)}</stringProp>
         </ConstantThroughputTimer>
         <hashTree/>
       </hashTree>
