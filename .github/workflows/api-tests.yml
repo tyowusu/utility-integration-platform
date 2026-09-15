@@ -434,13 +434,30 @@ jobs:
       # capacity statement. Sizing for the actual 10th-of-the-month peak
       # needs distributed load from an environment that resembles the
       # callers, and that is a separate exercise from this gate.
-      - name: Run peak-day profile
+      - name: Run performance smoke profile
         working-directory: qa-automation
         run: |
-          mvn --batch-mode --no-transfer-progress verify -Pperf -DskipTests \
+          mvn --batch-mode --no-transfer-progress \
+            jmeter:configure@configuration jmeter:jmeter@jmeter-tests jmeter:results@jmeter-check-results -Pperf \
             -Dapi.base.url=${BASE_URL} \
-            -Daccess.token=${{ steps.token.outputs.token }}
-
+            -Daccess.token=${{ steps.token.outputs.token }} \
+            -Dread.threads=1 -Dwrite.threads=0 -Dramp.seconds=1 -Dduration.seconds=30 -Dread.rate.per.min=60
+  
+      - name: Fail unless JMeter actually ran
+        working-directory: qa-automation
+        run: |
+          RESULTS=target/jmeter/results/switching-deadline-peak.csv
+          MIN_SAMPLES=10
+          if [ ! -f "$RESULTS" ]; then
+            echo "::error::No JMeter results file — the plan did not run."
+            exit 1
+          fi
+          SAMPLES=$(( $(wc -l < "$RESULTS") - 1 ))
+          echo "JMeter executed $SAMPLES samples (minimum $MIN_SAMPLES)."
+          if [ "$SAMPLES" -lt "$MIN_SAMPLES" ]; then
+            echo "::error::Only $SAMPLES samples — too few to mean anything."
+            exit 1
+          fi
       - name: Upload JMeter report
         if: always()
         uses: actions/upload-artifact@v4

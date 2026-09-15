@@ -45,6 +45,11 @@
         <surefire.version>3.5.2</surefire.version>
         <failsafe.version>3.5.2</failsafe.version>
         <jmeter.plugin.version>3.8.0</jmeter.plugin.version>
+        <read.threads>1</read.threads>
+        <write.threads>0</write.threads>
+        <ramp.seconds>1</ramp.seconds>
+        <duration.seconds>30</duration.seconds>
+        <read.rate.per.min>60</read.rate.per.min>
 
         <!--
           Target under test. Overridden per environment on the command line:
@@ -209,6 +214,11 @@
                              still executes and fails on assertions rather
                              than on an unresolved property. -->
                         <access.token>${access.token}</access.token>
+                        <read.threads>${read.threads}</read.threads>
+                        <write.threads>${write.threads}</write.threads>
+                        <ramp.seconds>${ramp.seconds}</ramp.seconds>
+                        <duration.seconds>${duration.seconds}</duration.seconds>
+                        <read.rate.per.min>${read.rate.per.min}</read.rate.per.min>
                     </propertiesUser>
                 </configuration>
             </plugin>
