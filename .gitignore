@@ -69,3 +69,8 @@ switching-process-api/
 !*.tfvars.example
 crash.log
 crash.*.log
+
+# JMeter writes jmeter.log into whatever directory it was launched from, and
+# logs every -J property on startup — including -Jaccess.token in plaintext.
+# Launch it with -j pointing outside the repo; this is the backstop.
+jmeter.log
