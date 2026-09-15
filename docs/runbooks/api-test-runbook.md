@@ -113,7 +113,7 @@ that's the peak-day ceiling, not something that protects a laptop run.
 **5 · Read.** *Summary Report*: `# Samples` above zero proves the plan
 executed. Then `Error %`, `Average` in ms against the 800ms SLO, and
 `Throughput`.
-Baseline — 2026-09-15, dev, JMeter 5.6.3 GUI, TG1 only, 1 thread, 20s, from laptop:
+Baseline — 2026-09-14, dev, JMeter 5.6.3 GUI, TG1 only, 1 thread, 20s, from laptop:
 **52 samples · 0% errors · 381ms average · 2.6/s throughput** (≈156/min, under
 the 200/min limit). Cross-checks: 52 ÷ 20s = 2.6/s, and 1000 ÷ 381 ≈ 2.62/s —
 the numbers agree with each other, so the run is trustworthy.
