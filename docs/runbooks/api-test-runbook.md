@@ -120,7 +120,7 @@ the numbers agree with each other, so the run is trustworthy.
 
 CI baseline — 2026-09-15, dev, jmeter-maven-plugin 3.8.0 on a GitHub Actions
 runner, TG1 only, 1 thread, 30s, paced at 60/min (run 35007839041, commit
-1404c3d): **30 samples · 0% errors · 60ms average · 1.3/s throughput**.
+1404c3d): **30 samples · 0% errors · 70ms average · 1.0/s throughput**.
 Cross-check: 30 samples in 29s ≈ 1.0/s, matching the 60/min pacing. The 70ms
 average against 381ms from the laptop is network distance, not a faster API —
 compare CI runs with CI runs, laptop runs with laptop runs.
